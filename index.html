@@ -407,6 +407,21 @@
       setCustomQty(prev => ({ ...prev, [userEmail]: qty }));
     };
 
+    // Consolidated assignment execution helper
+    const executeAssignment = async (payloadAssignments, qty, resetCallback) => {
+      setIsAssigning(true);
+      try {
+        await fetchAPI('assignLeads', { assignments: payloadAssignments });
+        resetCallback();
+        await refreshData(); // Force app to sequentially wait for new data to load
+        showToast(`Successfully assigned ${qty} leads!`);
+      } catch (err) {
+        showToast("Assignment failed. Please check your connection.");
+      } finally {
+        setIsAssigning(false);
+      }
+    };
+
     const handleBulkAssign = async () => {
       if (!selectedModel) return showToast("Please select a Model Name.");
       if (selectedUsers.length === 0) return showToast("Please select at least one User.");
@@ -432,7 +447,6 @@
         return showToast(`Error: You are assigning ${totalQtyNeeded}, but only ${selectedModelLeadsCount} leads are available.`);
       }
 
-      setIsAssigning(true);
       const leadsToAssign = unassignedLeads.filter(l => l.modelName === selectedModel);
       let leadIndex = 0;
       const today = getLocalYYYYMMDD();
@@ -447,7 +461,7 @@
         }
       }
 
-      executeAssignment(payloadAssignments, totalQtyNeeded, () => {
+      await executeAssignment(payloadAssignments, totalQtyNeeded, () => {
         setSelectedModel('');
         setSelectedUsers([]);
         setEqualQty('');
@@ -459,7 +473,6 @@
       if (selectedManualLeads.length === 0) return showToast("Please select at least one lead.");
       if (!manualTarget) return showToast("Please select a target user to assign to.");
       
-      setIsAssigning(true);
       const today = getLocalYYYYMMDD();
       const payloadAssignments = selectedManualLeads.map(sn => ({
         sn: sn,
@@ -468,22 +481,10 @@
         type: 'New' // Resets state to 'New' for the target user
       }));
 
-      executeAssignment(payloadAssignments, payloadAssignments.length, () => {
+      await executeAssignment(payloadAssignments, payloadAssignments.length, () => {
         setSelectedManualLeads([]);
         setManualTarget('');
       });
-    };
-
-    const executeAssignment = async (payloadAssignments, qty, resetCallback) => {
-      try {
-        await fetchAPI('assignLeads', { assignments: payloadAssignments });
-        showToast(`Successfully assigned ${qty} leads!`);
-        resetCallback();
-        refreshData();
-      } catch (err) {
-        showToast("Assignment failed.");
-      }
-      setIsAssigning(false);
     };
 
     const toggleManualLead = (sn) => {
@@ -733,12 +734,13 @@
           remarks: remarksString, 
           type: finalDate ? 'Rescheduled' : 'Closed'
         });
+        await refreshData();
         showToast("Update saved successfully!");
-        refreshData();
       } catch (err) {
         showToast("Update failed.");
+      } finally {
+        setIsSaving(false);
       }
-      setIsSaving(false);
     };
 
     return (
@@ -1002,21 +1004,26 @@
       setIsSaving(true);
       try {
         await fetchAPI('addUser', formData);
-        showToast("New User added successfully!");
         setShowForm(false);
         setFormData({ role: 'User', name: '', department: '', mobile: '', email: '', pin: '', status: 'Active' });
-        refreshData();
+        await refreshData();
+        showToast("New User added successfully!");
       } catch (err) {
         showToast("Error adding user.");
+      } finally {
+        setIsSaving(false);
       }
-      setIsSaving(false);
     };
 
     const toggleStatus = async (user) => {
       const newStatus = user.status === 'Active' ? 'Inactive' : 'Active';
-      await fetchAPI('toggleUserStatus', { email: user.email, status: newStatus });
-      showToast(`${user.name} is now ${newStatus}.`);
-      refreshData();
+      try {
+        await fetchAPI('toggleUserStatus', { email: user.email, status: newStatus });
+        await refreshData();
+        showToast(`${user.name} is now ${newStatus}.`);
+      } catch (err) {
+        showToast("Failed to update status.");
+      }
     };
 
     return (

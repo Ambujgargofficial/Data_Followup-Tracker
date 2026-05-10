@@ -812,6 +812,13 @@
 
     // ---- Summary Tab State ----
     const [summaryDate, setSummaryDate] = useState(getLocalYYYYMMDD());
+    
+    // ---- Breakdown Modal State ----
+    const [isBreakdownModalOpen, setIsBreakdownModalOpen] = useState(false);
+    const [breakdownUser, setBreakdownUser] = useState('');
+    const [modalView, setModalView] = useState('breakdown'); // 'breakdown', 'drilldown', or 'leadHistory'
+    const [selectedDrilldownStatus, setSelectedDrilldownStatus] = useState('');
+    const [selectedLead, setSelectedLead] = useState(null);
 
     // --- Details Logic ---
     const reportLeads = leads.filter(l => {
@@ -884,6 +891,7 @@
 
         return {
             name: userObj.name,
+            email: userObj.email,
             opening, assigned, rescheduled, followupDone,
             remaining: (opening + assigned + rescheduled) - followupDone
         };
@@ -897,6 +905,46 @@
         remaining: acc.remaining + curr.remaining
     }), { opening: 0, assigned: 0, rescheduled: 0, followupDone: 0, remaining: 0 });
 
+    // --- Modal Logic ---
+    const openBreakdownModal = (userEmail) => {
+      setBreakdownUser(userEmail);
+      setModalView('breakdown');
+      setIsBreakdownModalOpen(true);
+    };
+
+    const getBreakdownData = () => {
+      const breakdown = {};
+      STATUS_OPTIONS.forEach(s => breakdown[s] = 0);
+      let total = 0;
+
+      leads.filter(l => l.assignTo === breakdownUser).forEach(l => {
+        const history = parseRemarks(l.remarks);
+        const followupsOnDate = history.filter(h => h.date === summaryDate);
+        if (followupsOnDate.length > 0) {
+          const finalStatus = followupsOnDate[followupsOnDate.length - 1].status;
+          if (breakdown[finalStatus] !== undefined) {
+             breakdown[finalStatus]++;
+          } else {
+             breakdown[finalStatus] = 1;
+          }
+          total++;
+        }
+      });
+      return { breakdown, total };
+    };
+
+    const getDrilldownLeads = (statusToMatch) => {
+      return leads.filter(l => {
+        if (l.assignTo !== breakdownUser) return false;
+        const history = parseRemarks(l.remarks);
+        const followupsOnDate = history.filter(h => h.date === summaryDate);
+        if (followupsOnDate.length > 0) {
+          const finalStatus = followupsOnDate[followupsOnDate.length - 1].status;
+          return finalStatus === statusToMatch;
+        }
+        return false;
+      });
+    };
 
     return (
       <div className="space-y-6">
@@ -1053,7 +1101,19 @@
                       <td className="p-3 border border-gray-300 text-center">{s.opening}</td>
                       <td className="p-3 border border-gray-300 text-center">{s.assigned}</td>
                       <td className="p-3 border border-gray-300 text-center">{s.rescheduled}</td>
-                      <td className="p-3 border border-gray-300 text-center">{s.followupDone}</td>
+                      <td className="p-3 border border-gray-300 text-center">
+                        {s.followupDone > 0 ? (
+                          <button 
+                            onClick={() => openBreakdownModal(s.email)} 
+                            className="text-blue-600 underline font-bold hover:text-blue-800 px-2 py-1 rounded"
+                            title="View Status Breakdown"
+                          >
+                            {s.followupDone}
+                          </button>
+                        ) : (
+                          <span className="text-gray-500">{s.followupDone}</span>
+                        )}
+                      </td>
                       <td className="p-3 border border-gray-300 text-center bg-yellow-100 font-bold text-gray-800">{s.remaining}</td>
                     </tr>
                   ))}
@@ -1069,6 +1129,170 @@
                   </tr>
                 </tbody>
               </table>
+            </div>
+          </div>
+        )}
+
+        {/* Modal for Followup Breakdown */}
+        {isBreakdownModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4 animate-fade-in">
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg flex flex-col max-h-[90vh] overflow-hidden">
+              <div className="bg-blue-600 text-white p-4 flex justify-between items-center">
+                <h2 className="text-xl font-bold">Follow-up Breakdown</h2>
+                <button onClick={() => setIsBreakdownModalOpen(false)} className="text-white hover:text-gray-200 text-xl leading-none">
+                  <i className="fa-solid fa-xmark"></i>
+                </button>
+              </div>
+              
+              <div className="p-6 flex-1 overflow-y-auto bg-gray-50">
+                <div className="mb-6">
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">Selected User</label>
+                  <select 
+                    value={breakdownUser} 
+                    onChange={(e) => {
+                      setBreakdownUser(e.target.value);
+                      setModalView('breakdown');
+                    }}
+                    className="w-full border border-gray-300 rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                  >
+                    {targetUsers.map(u => (
+                      <option key={u.email} value={u.email}>{u.name}</option>
+                    ))}
+                  </select>
+                </div>
+                
+                {modalView === 'breakdown' && (() => {
+                  const { breakdown, total } = getBreakdownData();
+                  return (
+                    <div className="bg-white border border-gray-200 rounded-lg overflow-hidden shadow-sm">
+                      <table className="w-full text-left text-sm whitespace-nowrap">
+                        <thead className="bg-gray-100 text-gray-700 border-b">
+                          <tr>
+                            <th className="p-3 font-semibold uppercase tracking-wider text-xs">Follow-up Status</th>
+                            <th className="p-3 font-semibold uppercase tracking-wider text-xs text-center">Count</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {STATUS_OPTIONS.map(status => (
+                            <tr key={status} className="border-b hover:bg-gray-50 last:border-0">
+                              <td className="p-3 font-medium text-gray-700">{status}</td>
+                              <td className="p-3 text-center text-gray-900 font-medium">
+                                {breakdown[status] > 0 ? (
+                                  <button 
+                                    onClick={() => {
+                                      setSelectedDrilldownStatus(status);
+                                      setModalView('drilldown');
+                                    }}
+                                    className="text-blue-600 underline font-bold hover:text-blue-800"
+                                    title="View Leads"
+                                  >
+                                    {breakdown[status]}
+                                  </button>
+                                ) : (
+                                  breakdown[status]
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                          <tr className="bg-blue-50 font-bold border-t-2 border-blue-200">
+                            <td className="p-3 text-right text-blue-900">Total Follow-ups for {summaryDate}:</td>
+                            <td className="p-3 text-center text-blue-800 text-lg">{total}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })()}
+
+                {modalView === 'drilldown' && (
+                  <div>
+                    <div className="flex items-center mb-4 gap-2">
+                      <button onClick={() => setModalView('breakdown')} className="text-gray-600 hover:text-gray-900 bg-gray-200 hover:bg-gray-300 px-3 py-1.5 rounded text-sm font-medium transition-colors">
+                        <i className="fa-solid fa-arrow-left mr-1"></i> Back
+                      </button>
+                      <h3 className="text-md font-bold text-gray-800 flex-1 truncate">
+                        Leads marked as "{selectedDrilldownStatus}"
+                      </h3>
+                    </div>
+                    
+                    <div className="bg-white border border-gray-200 rounded-lg overflow-hidden shadow-sm">
+                      <table className="w-full text-left text-sm whitespace-nowrap">
+                        <thead className="bg-gray-100 text-gray-700 border-b">
+                          <tr>
+                            <th className="p-3 font-semibold uppercase tracking-wider text-xs">Name</th>
+                            <th className="p-3 font-semibold uppercase tracking-wider text-xs">Mobile No.</th>
+                            <th className="p-3 font-semibold uppercase tracking-wider text-xs">Remarks</th>
+                            <th className="p-3 font-semibold uppercase tracking-wider text-xs text-center">Action</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {getDrilldownLeads(selectedDrilldownStatus).map(lead => {
+                            const history = parseRemarks(lead.remarks);
+                            const latestRemark = history.length > 0 ? history[history.length - 1].text : '-';
+                            return (
+                              <tr key={lead.sn} className="border-b hover:bg-gray-50 last:border-0">
+                                <td className="p-3 font-medium text-gray-800">{lead.customerName}</td>
+                                <td className="p-3 text-gray-600">{lead.mobileNumber}</td>
+                                <td className="p-3 text-gray-600 truncate max-w-[150px]" title={latestRemark}>{latestRemark}</td>
+                                <td className="p-3 text-center">
+                                  <button 
+                                    onClick={() => {
+                                      setSelectedLead(lead);
+                                      setModalView('leadHistory');
+                                    }}
+                                    className="text-blue-700 bg-blue-50 hover:bg-blue-100 px-3 py-1 rounded border border-blue-200 text-xs font-bold transition-colors"
+                                  >
+                                    View
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {modalView === 'leadHistory' && selectedLead && (
+                  <div>
+                    <div className="flex items-center mb-4 gap-2">
+                      <button onClick={() => setModalView('drilldown')} className="text-gray-600 hover:text-gray-900 bg-gray-200 hover:bg-gray-300 px-3 py-1.5 rounded text-sm font-medium transition-colors">
+                        <i className="fa-solid fa-arrow-left mr-1"></i> Back
+                      </button>
+                      <h3 className="text-md font-bold text-gray-800 flex-1 truncate">
+                        History for {selectedLead.customerName}
+                      </h3>
+                    </div>
+
+                    <div className="bg-white p-4 border border-gray-200 rounded-lg shadow-sm">
+                      <div className="flex justify-between items-start mb-4 border-b border-gray-100 pb-3">
+                        <div>
+                          <div className="font-bold text-gray-800 text-lg">{selectedLead.customerName}</div>
+                          <div className="text-sm text-gray-500 font-medium mt-1">{selectedLead.mobileNumber} &bull; Model: {selectedLead.modelName}</div>
+                        </div>
+                        <a href={`tel:${selectedLead.mobileNumber}`} className="text-green-700 bg-green-50 hover:bg-green-100 px-4 py-2 rounded-md text-sm font-bold border border-green-200 transition-colors flex items-center">
+                          <i className="fa-solid fa-phone mr-2"></i> Call
+                        </a>
+                      </div>
+                      <div className="bg-gray-50 p-3 rounded-lg border border-gray-200">
+                        <div className="font-bold text-gray-700 mb-3 uppercase tracking-wide text-xs">Full Remarks History:</div>
+                        <div className="space-y-3 max-h-60 overflow-y-auto pr-2">
+                          {parseRemarks(selectedLead.remarks).map((h, idx) => (
+                            <div key={idx} className="border-l-4 border-blue-400 pl-3 py-2 bg-white rounded shadow-sm">
+                              <div className="flex justify-between items-center mb-1.5">
+                                <span className="text-gray-500 font-medium text-xs">{h.date}</span>
+                                <span className={`font-bold text-[10px] px-2 py-0.5 rounded ${h.status === selectedDrilldownStatus && h.date === summaryDate ? 'bg-blue-100 text-blue-700' : 'bg-gray-200 text-gray-700'}`}>{h.status}</span>
+                              </div>
+                              <div className="text-gray-800 text-sm leading-relaxed">{h.text}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         )}

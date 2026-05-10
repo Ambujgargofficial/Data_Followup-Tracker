@@ -22,6 +22,8 @@
     /* Hide scrollbar for nav */
     .no-scrollbar::-webkit-scrollbar { display: none; }
     .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    .animate-fade-in { animation: fadeIn 0.2s ease-in-out; }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
   </style>
 </head>
 <body class="bg-gray-100 font-sans text-gray-800">
@@ -32,11 +34,11 @@
   const { useState, useEffect } = React;
 
   // ==========================================
-  // CONFIGURATION: PASTE YOUR APP SCRIPT URL HERE
+  // CONFIGURATION: SCRIPT URL
   // ==========================================
   const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbw2T__s9YBHwOO7q-7zeoVznO2QcXlrpcMJ8TbUhWeaz7sz3NZ-Vfc_93uNTm9HXIX1_g/exec"; 
 
-  const STATUS_OPTIONS = ["Hot", "Warm", "Cold", "Not Interested", "Unreachable", "Call Not Pick"];
+  const STATUS_OPTIONS = ["Hot", "Warm", "Cold", "Not Interested", "Unreachable", "Call Not Pick", "Phone No. Wrong / Incoming off"];
 
   // Helper function to call Google Apps Script
   const fetchAPI = async (action, payload = {}) => {
@@ -55,7 +57,7 @@
     }
   };
 
-  // --- New Date Helpers to fix timezone issues ---
+  // --- Date Helpers to fix timezone issues ---
   const getLocalYYYYMMDD = () => {
     const d = new Date();
     const year = d.getFullYear();
@@ -85,9 +87,22 @@
       if (Array.isArray(parsed)) return parsed;
       return [{ date: 'Old Note', text: remarksStr, status: 'Unknown' }];
     } catch (e) {
-      // Fallback for legacy plain text remarks
       return [{ date: 'Old Note', text: remarksStr, status: 'Unknown' }];
     }
+  };
+
+  // --- CSV Export Helper ---
+  const exportToCSV = (headers, rows, filename) => {
+    const csvContent = "data:text/csv;charset=utf-8," 
+      + headers.join(",") + "\n" 
+      + rows.map(e => e.map(cell => `"${String(cell || '').replace(/"/g, '""')}"`).join(",")).join("\n");
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", filename);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   const App = () => {
@@ -700,16 +715,17 @@
     const [newRemark, setNewRemark] = useState('');
     const [isSaving, setIsSaving] = useState(false);
 
+    const isClosedStatus = status === 'Not Interested' || status === 'Phone No. Wrong / Incoming off' || status === 'Closed';
+
     const handleUpdate = async (e) => {
       e.preventDefault();
       if (!status) return showToast("Please select Followup Status.");
-      if (status !== 'Not Interested' && !date) return showToast("Please select a Re-Scheduled Date.");
+      if (!isClosedStatus && !date) return showToast("Please select a Re-Scheduled Date.");
       if (!newRemark.trim()) return showToast("Please enter remarks.");
 
       let finalDate = date;
-      if (status === 'Not Interested') finalDate = '';
+      if (isClosedStatus) finalDate = '';
 
-      // Append new remark to history
       const updatedHistory = [...history, { 
         date: getLocalYYYYMMDD(), 
         status: status, 
@@ -753,7 +769,6 @@
 
         <form onSubmit={handleUpdate} className="p-4 flex-1 flex flex-col space-y-4">
           
-          {/* History Viewer (Read Only) */}
           {history.length > 0 && (
             <div>
               <label className="block text-xs font-semibold text-gray-600 uppercase mb-1">Previous History</label>
@@ -779,15 +794,15 @@
             </select>
           </div>
           
-          {status !== 'Not Interested' && (
+          {!isClosedStatus && (
             <div>
               <label className="block text-xs font-semibold text-gray-600 uppercase mb-1">2. Re-Scheduled Date <span className="text-red-500">*</span></label>
-              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} required={status !== 'Not Interested'} className="w-full text-sm border border-gray-300 rounded p-2 focus:ring-1 focus:ring-blue-500 outline-none"/>
+              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} required={!isClosedStatus} className="w-full text-sm border border-gray-300 rounded p-2 focus:ring-1 focus:ring-blue-500 outline-none"/>
             </div>
           )}
 
           <div className="flex-1">
-            <label className="block text-xs font-semibold text-gray-600 uppercase mb-1">{status !== 'Not Interested' ? '3.' : '2.'} Add New Remark <span className="text-red-500">*</span></label>
+            <label className="block text-xs font-semibold text-gray-600 uppercase mb-1">{!isClosedStatus ? '3.' : '2.'} Add New Remark <span className="text-red-500">*</span></label>
             <textarea value={newRemark} onChange={(e) => setNewRemark(e.target.value)} rows="2" required className="w-full text-sm border border-gray-300 rounded p-2 focus:ring-1 focus:ring-blue-500 outline-none resize-none" placeholder="Enter new conversation remarks..."></textarea>
           </div>
           <button type="submit" disabled={isSaving} className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded font-medium transition-colors mt-auto disabled:opacity-50">
@@ -816,7 +831,9 @@
     // ---- Breakdown Modal State ----
     const [isBreakdownModalOpen, setIsBreakdownModalOpen] = useState(false);
     const [breakdownUser, setBreakdownUser] = useState('');
-    const [modalView, setModalView] = useState('breakdown'); // 'breakdown', 'drilldown', or 'leadHistory'
+    const [breakdownMode, setBreakdownMode] = useState('daily'); 
+    const [breakdownSubType, setBreakdownSubType] = useState('fresh'); 
+    const [modalView, setModalView] = useState('breakdown'); 
     const [selectedDrilldownStatus, setSelectedDrilldownStatus] = useState('');
     const [selectedLead, setSelectedLead] = useState(null);
 
@@ -842,7 +859,7 @@
       return true;
     });
 
-    const totalAssigned = reportLeads.length;
+    const totalAssignedDetails = reportLeads.length;
     let followupsDoneCount = 0;
     const statusCounts = {};
     STATUS_OPTIONS.forEach(s => statusCounts[s] = 0);
@@ -850,10 +867,12 @@
     reportLeads.forEach(l => {
       if (l.followUpStatus) {
         followupsDoneCount++;
-        statusCounts[l.followUpStatus] = (statusCounts[l.followUpStatus] || 0) + 1;
+        if (statusCounts[l.followUpStatus] !== undefined) {
+          statusCounts[l.followUpStatus]++;
+        }
       }
     });
-    const pendingFollowups = totalAssigned - followupsDoneCount;
+    const pendingFollowupsDetails = totalAssignedDetails - followupsDoneCount;
 
     const clearFilters = () => {
       setFilterDate(''); setStartDate(''); setEndDate('');
@@ -861,54 +880,163 @@
       setIsDateRange(false);
     };
 
+    const handleExportDetailed = () => {
+      const headers = ["SN", "Customer Name", "Mobile", "Model", "Assigned To", "Status", "Re-Schedule", "Latest Remark"];
+      const rows = reportLeads.map(l => {
+        const assignedUser = users.find(u => u.email === l.assignTo);
+        const history = parseRemarks(l.remarks);
+        const latestRemark = history.length > 0 ? history[history.length - 1].text : '';
+        return [l.sn, l.customerName, l.mobileNumber, l.modelName, assignedUser ? assignedUser.name : '', l.followUpStatus || 'Pending', normalizeDate(l.reScheduledDate), latestRemark];
+      });
+      exportToCSV(headers, rows, "detailed_report.csv");
+    };
+
     // --- Summary Logic ---
     const targetUsers = user.role === 'Admin' ? users.filter(u => u.role === 'User') : [user];
     
     const summaryData = targetUsers.map(userObj => {
-        let opening = 0, assigned = 0, rescheduled = 0, followupDone = 0;
+        let opening = 0, newAssigned = 0, rescheduled = 0;
+        let followupDoneFresh = 0, followupDoneResched = 0;
+        let remUntouched = 0, remPending = 0, remFuture = 0;
 
         leads.filter(l => l.assignTo === userObj.email).forEach(l => {
             const normalizedAssign = normalizeDate(l.assignDate);
             const normalizedResched = normalizeDate(l.reScheduledDate);
             const history = parseRemarks(l.remarks);
-            const followupDates = history.map(h => h.date);
+            
+            const isUntouched = history.length === 0;
+            const isClosed = l.followUpStatus === 'Not Interested' || l.followUpStatus === 'Phone No. Wrong / Incoming off' || l.followUpStatus === 'Closed';
 
-            let isOpening = false;
-            const firstFollowupDate = followupDates.length > 0 ? followupDates[0] : null;
-            const latestFollowup = followupDates.length > 0 ? followupDates[followupDates.length - 1] : null;
-
-            if (normalizedAssign && normalizedAssign < summaryDate && (!firstFollowupDate || firstFollowupDate >= summaryDate)) {
-                isOpening = true;
-            } else if (normalizedResched && normalizedResched < summaryDate && (!latestFollowup || latestFollowup < summaryDate)) {
-                isOpening = true;
+            // 1. Opening
+            if (isUntouched && normalizedAssign && normalizedAssign < summaryDate) {
+                opening++;
+            } else if (!isUntouched && !isClosed && (!normalizedResched || normalizedResched < summaryDate)) {
+                opening++;
             }
 
-            if (isOpening) opening++;
-            if (normalizedAssign === summaryDate) assigned++;
-            if (normalizedResched === summaryDate) rescheduled++;
-            if (followupDates.includes(summaryDate)) followupDone++;
+            // 2. New Assigned
+            if (normalizedAssign === summaryDate) {
+                newAssigned++;
+            }
+
+            // 3. Rescheduled
+            if (normalizedResched === summaryDate) {
+                rescheduled++;
+            }
+
+            // 4. Followups Done
+            const followupsOnDate = history.filter(h => h.date === summaryDate);
+            if (followupsOnDate.length > 0) {
+                if (history[0].date === summaryDate) {
+                    followupDoneFresh++;
+                } else {
+                    followupDoneResched++;
+                }
+            }
+
+            // 5. Remaining
+            if (isUntouched) {
+                remUntouched++;
+            } else if (!isClosed) {
+                if (normalizedResched > summaryDate) {
+                    remFuture++;
+                } else {
+                    remPending++;
+                }
+            }
         });
 
         return {
-            name: userObj.name,
-            email: userObj.email,
-            opening, assigned, rescheduled, followupDone,
-            remaining: (opening + assigned + rescheduled) - followupDone
+            name: userObj.name, email: userObj.email,
+            opening, newAssigned, rescheduled, 
+            followupDoneFresh, followupDoneResched,
+            remUntouched, remPending, remFuture,
+            remTotal: remUntouched + remPending + remFuture
         };
     });
 
     const summaryTotals = summaryData.reduce((acc, curr) => ({
         opening: acc.opening + curr.opening,
-        assigned: acc.assigned + curr.assigned,
+        newAssigned: acc.newAssigned + curr.newAssigned,
         rescheduled: acc.rescheduled + curr.rescheduled,
-        followupDone: acc.followupDone + curr.followupDone,
-        remaining: acc.remaining + curr.remaining
-    }), { opening: 0, assigned: 0, rescheduled: 0, followupDone: 0, remaining: 0 });
+        followupDoneFresh: acc.followupDoneFresh + curr.followupDoneFresh,
+        followupDoneResched: acc.followupDoneResched + curr.followupDoneResched,
+        remUntouched: acc.remUntouched + curr.remUntouched,
+        remPending: acc.remPending + curr.remPending,
+        remFuture: acc.remFuture + curr.remFuture,
+        remTotal: acc.remTotal + curr.remTotal
+    }), { opening: 0, newAssigned: 0, rescheduled: 0, followupDoneFresh: 0, followupDoneResched: 0, remUntouched: 0, remPending: 0, remFuture: 0, remTotal: 0 });
+
+    const handleExportSummary = () => {
+      const headers = ["User Name", "Opening", "New Assigned", "Rescheduled", "Followup Done (Fresh)", "Followup Done (Resched)", "Rem (Untouched)", "Rem (Pending)", "Rem (Future)", "Total Remaining"];
+      const rows = summaryData.map(s => [s.name, s.opening, s.newAssigned, s.rescheduled, s.followupDoneFresh, s.followupDoneResched, s.remUntouched, s.remPending, s.remFuture, s.remTotal]);
+      rows.push(["Grand Total", summaryTotals.opening, summaryTotals.newAssigned, summaryTotals.rescheduled, summaryTotals.followupDoneFresh, summaryTotals.followupDoneResched, summaryTotals.remUntouched, summaryTotals.remPending, summaryTotals.remFuture, summaryTotals.remTotal]);
+      exportToCSV(headers, rows, `assign_report_summary_${summaryDate}.csv`);
+    };
+
+    // --- Total All-Time Summary Logic ---
+    const totalData = targetUsers.map(userObj => {
+        let assigned = 0;
+        let followupDoneFresh = 0, followupDoneResched = 0;
+        let remUntouched = 0, remPending = 0, remFuture = 0;
+        
+        const today = getLocalYYYYMMDD();
+
+        leads.filter(l => l.assignTo === userObj.email).forEach(l => {
+            assigned++;
+            const history = parseRemarks(l.remarks);
+            const isUntouched = history.length === 0;
+            const isClosed = l.followUpStatus === 'Not Interested' || l.followUpStatus === 'Phone No. Wrong / Incoming off' || l.followUpStatus === 'Closed';
+            const normalizedResched = normalizeDate(l.reScheduledDate);
+
+            if (history.length === 1) followupDoneFresh++;
+            if (history.length > 1) followupDoneResched++;
+
+            if (isUntouched) {
+                remUntouched++;
+            } else if (!isClosed) {
+                if (normalizedResched > today) remFuture++;
+                else remPending++;
+            }
+        });
+
+        return {
+            name: userObj.name, email: userObj.email,
+            assigned, followupDoneFresh, followupDoneResched,
+            remUntouched, remPending, remFuture,
+            remTotal: remUntouched + remPending + remFuture
+        };
+    });
+
+    const totalAllTimeTotals = totalData.reduce((acc, curr) => ({
+        assigned: acc.assigned + curr.assigned,
+        followupDoneFresh: acc.followupDoneFresh + curr.followupDoneFresh,
+        followupDoneResched: acc.followupDoneResched + curr.followupDoneResched,
+        remUntouched: acc.remUntouched + curr.remUntouched,
+        remPending: acc.remPending + curr.remPending,
+        remFuture: acc.remFuture + curr.remFuture,
+        remTotal: acc.remTotal + curr.remTotal
+    }), { assigned: 0, followupDoneFresh: 0, followupDoneResched: 0, remUntouched: 0, remPending: 0, remFuture: 0, remTotal: 0 });
+
+    const handleExportTotalSummary = () => {
+      const headers = ["User Name", "Total Assigned", "Total Followup Done (Fresh)", "Total Followup Done (Resched)", "Rem (Untouched)", "Rem (Pending)", "Rem (Future)", "Total Remaining"];
+      const rows = totalData.map(s => [s.name, s.assigned, s.followupDoneFresh, s.followupDoneResched, s.remUntouched, s.remPending, s.remFuture, s.remTotal]);
+      rows.push(["Grand Total", totalAllTimeTotals.assigned, totalAllTimeTotals.followupDoneFresh, totalAllTimeTotals.followupDoneResched, totalAllTimeTotals.remUntouched, totalAllTimeTotals.remPending, totalAllTimeTotals.remFuture, totalAllTimeTotals.remTotal]);
+      exportToCSV(headers, rows, "total_assign_till_date.csv");
+    };
 
     // --- Modal Logic ---
-    const openBreakdownModal = (userEmail) => {
+    const openBreakdownModal = (userEmail, mode, subType) => {
       setBreakdownUser(userEmail);
-      setModalView('breakdown');
+      setBreakdownMode(mode);
+      setBreakdownSubType(subType);
+      
+      if (subType.startsWith('rem')) {
+          setSelectedDrilldownStatus('All'); 
+          setModalView('drilldown');
+      } else {
+          setModalView('breakdown');
+      }
       setIsBreakdownModalOpen(true);
     };
 
@@ -919,15 +1047,33 @@
 
       leads.filter(l => l.assignTo === breakdownUser).forEach(l => {
         const history = parseRemarks(l.remarks);
-        const followupsOnDate = history.filter(h => h.date === summaryDate);
-        if (followupsOnDate.length > 0) {
-          const finalStatus = followupsOnDate[followupsOnDate.length - 1].status;
-          if (breakdown[finalStatus] !== undefined) {
-             breakdown[finalStatus]++;
-          } else {
-             breakdown[finalStatus] = 1;
+        let isIncluded = false;
+        let finalStatus = '';
+
+        if (breakdownMode === 'daily') {
+          const followupsOnDate = history.filter(h => h.date === summaryDate);
+          if (followupsOnDate.length > 0) {
+            const firstCallDate = history[0].date;
+            const isFresh = firstCallDate === summaryDate;
+            
+            if ((breakdownSubType === 'fresh' && isFresh) || (breakdownSubType === 'resched' && !isFresh)) {
+              isIncluded = true;
+              finalStatus = followupsOnDate[followupsOnDate.length - 1].status;
+            }
           }
-          total++;
+        } else {
+          if (history.length > 0) {
+            const isFresh = history.length === 1;
+            if ((breakdownSubType === 'fresh' && isFresh) || (breakdownSubType === 'resched' && !isFresh)) {
+              isIncluded = true;
+              finalStatus = l.followUpStatus;
+            }
+          }
+        }
+
+        if (isIncluded && finalStatus) {
+           if (breakdown[finalStatus] !== undefined) breakdown[finalStatus]++;
+           total++;
         }
       });
       return { breakdown, total };
@@ -936,15 +1082,62 @@
     const getDrilldownLeads = (statusToMatch) => {
       return leads.filter(l => {
         if (l.assignTo !== breakdownUser) return false;
+        
         const history = parseRemarks(l.remarks);
-        const followupsOnDate = history.filter(h => h.date === summaryDate);
-        if (followupsOnDate.length > 0) {
-          const finalStatus = followupsOnDate[followupsOnDate.length - 1].status;
-          return finalStatus === statusToMatch;
+        const isUntouched = history.length === 0;
+        const isClosed = l.followUpStatus === 'Not Interested' || l.followUpStatus === 'Phone No. Wrong / Incoming off' || l.followUpStatus === 'Closed';
+        const normalizedResched = normalizeDate(l.reScheduledDate);
+        const compDate = breakdownMode === 'daily' ? summaryDate : getLocalYYYYMMDD();
+
+        // Remaining logic (Bypasses status check)
+        if (breakdownSubType === 'remUntouched') return isUntouched;
+        if (breakdownSubType === 'remPending') return !isUntouched && !isClosed && (!normalizedResched || normalizedResched <= compDate);
+        if (breakdownSubType === 'remFuture') return !isUntouched && !isClosed && normalizedResched > compDate;
+
+        // Normal followup status logic
+        let isIncluded = false;
+        let finalStatus = '';
+
+        if (breakdownMode === 'daily') {
+          const followupsOnDate = history.filter(h => h.date === summaryDate);
+          if (followupsOnDate.length > 0) {
+            const firstCallDate = history[0].date;
+            const isFresh = firstCallDate === summaryDate;
+            
+            if ((breakdownSubType === 'fresh' && isFresh) || (breakdownSubType === 'resched' && !isFresh)) {
+              isIncluded = true;
+              finalStatus = followupsOnDate[followupsOnDate.length - 1].status;
+            }
+          }
+        } else {
+          if (history.length > 0) {
+            const isFresh = history.length === 1;
+            if ((breakdownSubType === 'fresh' && isFresh) || (breakdownSubType === 'resched' && !isFresh)) {
+              isIncluded = true;
+              finalStatus = l.followUpStatus;
+            }
+          }
         }
-        return false;
+
+        return isIncluded && finalStatus === statusToMatch;
       });
     };
+
+    const handleExportDrilldown = () => {
+      const headers = ["Name", "Mobile No.", "Resched. Date", "Latest Remark"];
+      const leadsToExport = getDrilldownLeads(selectedDrilldownStatus);
+      const rows = leadsToExport.map(l => {
+         const history = parseRemarks(l.remarks);
+         const latestRemark = history.length > 0 ? history[history.length - 1].text : '';
+         return [l.customerName, l.mobileNumber, normalizeDate(l.reScheduledDate), latestRemark];
+      });
+      exportToCSV(headers, rows, `drilldown_${selectedDrilldownStatus}.csv`);
+    };
+
+    let drilldownHeaderText = `Leads marked as "${selectedDrilldownStatus}"`;
+    if (breakdownSubType === 'remUntouched') drilldownHeaderText = 'Remaining Leads: Untouched (Never Called)';
+    if (breakdownSubType === 'remPending') drilldownHeaderText = 'Remaining Leads: Pending/Overdue Action';
+    if (breakdownSubType === 'remFuture') drilldownHeaderText = 'Remaining Leads: Rescheduled for Future';
 
     return (
       <div className="space-y-6">
@@ -959,6 +1152,9 @@
           <button onClick={() => setReportTab('summary')} className={`px-4 py-2 font-medium rounded-t-lg transition-colors whitespace-nowrap ${reportTab === 'summary' ? 'bg-purple-50 text-purple-700 border-b-2 border-purple-600' : 'text-gray-500 hover:bg-gray-50'}`}>
             Assign Report (Summary)
           </button>
+          <button onClick={() => setReportTab('totalSummary')} className={`px-4 py-2 font-medium rounded-t-lg transition-colors whitespace-nowrap ${reportTab === 'totalSummary' ? 'bg-green-50 text-green-700 border-b-2 border-green-600' : 'text-gray-500 hover:bg-gray-50'}`}>
+            Total Assign Till Date
+          </button>
         </div>
 
         {reportTab === 'details' && (
@@ -967,7 +1163,7 @@
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
                 <div className="bg-blue-50 border border-blue-100 p-4 rounded-xl text-center">
                   <div className="text-sm font-semibold text-blue-600 mb-1 uppercase tracking-wider">Total Assigned</div>
-                  <div className="text-3xl font-bold text-blue-800">{totalAssigned}</div>
+                  <div className="text-3xl font-bold text-blue-800">{totalAssignedDetails}</div>
                 </div>
                 <div className="bg-green-50 border border-green-100 p-4 rounded-xl text-center">
                   <div className="text-sm font-semibold text-green-600 mb-1 uppercase tracking-wider">Followups Done</div>
@@ -975,7 +1171,7 @@
                 </div>
                 <div className="bg-orange-50 border border-orange-100 p-4 rounded-xl text-center">
                   <div className="text-sm font-semibold text-orange-600 mb-1 uppercase tracking-wider">Pending (Not Called)</div>
-                  <div className="text-3xl font-bold text-orange-800">{pendingFollowups}</div>
+                  <div className="text-3xl font-bold text-orange-800">{pendingFollowupsDetails}</div>
                 </div>
               </div>
               
@@ -1025,9 +1221,12 @@
                 )}
               </div>
               
-              <div>
-                <button onClick={clearFilters} className="w-full bg-gray-100 text-gray-600 hover:bg-gray-200 py-2 rounded text-sm font-medium transition-colors">
-                  Clear Filters
+              <div className="flex gap-2">
+                <button onClick={clearFilters} className="w-1/2 bg-gray-100 text-gray-600 hover:bg-gray-200 py-2 rounded text-sm font-medium transition-colors">
+                  Clear
+                </button>
+                <button onClick={handleExportDetailed} className="w-1/2 bg-green-600 hover:bg-green-700 text-white py-2 rounded text-sm font-medium transition-colors flex items-center justify-center gap-2">
+                  <i className="fa-solid fa-file-csv"></i> Export
                 </button>
               </div>
             </div>
@@ -1072,14 +1271,19 @@
 
         {reportTab === 'summary' && (
           <div className="space-y-6">
-            <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex flex-col md:flex-row items-center justify-center gap-4">
-               <h2 className="text-lg font-semibold text-gray-700">Follow Report Count as on Selected Date:</h2>
-               <input 
-                 type="date" 
-                 value={summaryDate} 
-                 onChange={(e) => setSummaryDate(e.target.value)} 
-                 className="border border-gray-300 rounded p-2 text-sm shadow-sm focus:ring-2 focus:ring-blue-500 outline-none" 
-               />
+            <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex flex-col md:flex-row items-center justify-between gap-4">
+               <div className="flex items-center gap-4">
+                 <h2 className="text-lg font-semibold text-gray-700">Follow-UP Report Count as on Selected Date:</h2>
+                 <input 
+                   type="date" 
+                   value={summaryDate} 
+                   onChange={(e) => setSummaryDate(e.target.value)} 
+                   className="border border-gray-300 rounded p-2 text-sm shadow-sm focus:ring-2 focus:ring-blue-500 outline-none" 
+                 />
+               </div>
+               <button onClick={handleExportSummary} className="bg-green-600 hover:bg-green-700 text-white py-2 px-4 rounded text-sm font-medium transition-colors flex items-center gap-2">
+                 <i className="fa-solid fa-file-csv"></i> Export CSV
+               </button>
             </div>
 
             <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-x-auto">
@@ -1088,10 +1292,14 @@
                   <tr>
                     <th className="p-3 border border-gray-300 bg-gray-50 text-gray-700">User Name</th>
                     <th className="p-3 border border-gray-300 bg-gray-50 text-gray-700 text-center">Opening</th>
-                    <th className="p-3 border border-gray-300 bg-gray-50 text-gray-700 text-center">Assigned</th>
+                    <th className="p-3 border border-gray-300 bg-gray-50 text-gray-700 text-center">New Assigned</th>
                     <th className="p-3 border border-gray-300 bg-gray-50 text-gray-700 text-center">Rescheduled</th>
-                    <th className="p-3 border border-gray-300 bg-gray-50 text-gray-700 text-center">Followup Done</th>
-                    <th className="p-3 border border-gray-300 bg-gray-50 text-gray-700 text-center">Remaining</th>
+                    <th className="p-3 border border-gray-300 bg-cyan-50 text-cyan-800 text-center">Followup Done (Fresh)</th>
+                    <th className="p-3 border border-gray-300 bg-purple-50 text-purple-800 text-center">Followup Done (Resched)</th>
+                    <th className="p-3 border border-gray-300 bg-yellow-50 text-yellow-800 text-center">Rem (Untouched)</th>
+                    <th className="p-3 border border-gray-300 bg-orange-50 text-orange-800 text-center">Rem (Pending)</th>
+                    <th className="p-3 border border-gray-300 bg-yellow-100 text-yellow-900 text-center">Rem (Future)</th>
+                    <th className="p-3 border border-gray-300 bg-red-50 text-red-800 text-center">Total Remaining</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1101,31 +1309,139 @@
                       <td className="p-3 border border-gray-300 text-center">{s.opening}</td>
                       <td className="p-3 border border-gray-300 text-center">{s.assigned}</td>
                       <td className="p-3 border border-gray-300 text-center">{s.rescheduled}</td>
-                      <td className="p-3 border border-gray-300 text-center">
-                        {s.followupDone > 0 ? (
-                          <button 
-                            onClick={() => openBreakdownModal(s.email)} 
-                            className="text-blue-600 underline font-bold hover:text-blue-800 px-2 py-1 rounded"
-                            title="View Status Breakdown"
-                          >
-                            {s.followupDone}
+                      
+                      <td className="p-3 border border-gray-300 text-center bg-cyan-50">
+                        {s.followupDoneFresh > 0 ? (
+                          <button onClick={() => openBreakdownModal(s.email, 'daily', 'fresh')} className="text-cyan-700 underline font-bold hover:text-cyan-900 px-2 py-1 rounded" title="View Fresh Followups">
+                            {s.followupDoneFresh}
                           </button>
-                        ) : (
-                          <span className="text-gray-500">{s.followupDone}</span>
-                        )}
+                        ) : <span className="text-gray-400">0</span>}
                       </td>
-                      <td className="p-3 border border-gray-300 text-center bg-yellow-100 font-bold text-gray-800">{s.remaining}</td>
+
+                      <td className="p-3 border border-gray-300 text-center bg-purple-50">
+                        {s.followupDoneResched > 0 ? (
+                          <button onClick={() => openBreakdownModal(s.email, 'daily', 'resched')} className="text-purple-700 underline font-bold hover:text-purple-900 px-2 py-1 rounded" title="View Rescheduled Followups">
+                            {s.followupDoneResched}
+                          </button>
+                        ) : <span className="text-gray-400">0</span>}
+                      </td>
+
+                      <td className="p-3 border border-gray-300 text-center bg-yellow-50">
+                        {s.remUntouched > 0 ? (
+                          <button onClick={() => openBreakdownModal(s.email, 'daily', 'remUntouched')} className="text-yellow-800 underline font-bold hover:text-yellow-900 px-2 py-1 rounded">{s.remUntouched}</button>
+                        ) : <span className="text-gray-400">0</span>}
+                      </td>
+                      
+                      <td className="p-3 border border-gray-300 text-center bg-orange-50">
+                        {s.remPending > 0 ? (
+                          <button onClick={() => openBreakdownModal(s.email, 'daily', 'remPending')} className="text-orange-800 underline font-bold hover:text-orange-900 px-2 py-1 rounded">{s.remPending}</button>
+                        ) : <span className="text-gray-400">0</span>}
+                      </td>
+                      
+                      <td className="p-3 border border-gray-300 text-center bg-yellow-100">
+                        {s.remFuture > 0 ? (
+                          <button onClick={() => openBreakdownModal(s.email, 'daily', 'remFuture')} className="text-yellow-900 underline font-bold hover:text-black px-2 py-1 rounded">{s.remFuture}</button>
+                        ) : <span className="text-gray-400">0</span>}
+                      </td>
+
+                      <td className="p-3 border border-gray-300 text-center bg-red-50 font-bold text-red-800">{s.remTotal}</td>
                     </tr>
                   ))}
                   
-                  {/* Grand Total Row */}
                   <tr className="bg-gray-100">
                     <td className="p-3 border border-gray-400 font-bold text-gray-900">Grand Total</td>
                     <td className="p-3 border border-gray-400 font-bold text-center text-gray-900">{summaryTotals.opening}</td>
-                    <td className="p-3 border border-gray-400 font-bold text-center text-gray-900">{summaryTotals.assigned}</td>
+                    <td className="p-3 border border-gray-400 font-bold text-center text-gray-900">{summaryTotals.newAssigned}</td>
                     <td className="p-3 border border-gray-400 font-bold text-center text-gray-900">{summaryTotals.rescheduled}</td>
-                    <td className="p-3 border border-gray-400 font-bold text-center text-gray-900">{summaryTotals.followupDone}</td>
-                    <td className="p-3 border border-gray-400 font-bold text-center bg-yellow-200 text-gray-900">{summaryTotals.remaining}</td>
+                    <td className="p-3 border border-gray-400 font-bold text-center text-cyan-800 bg-cyan-100">{summaryTotals.followupDoneFresh}</td>
+                    <td className="p-3 border border-gray-400 font-bold text-center text-purple-800 bg-purple-100">{summaryTotals.followupDoneResched}</td>
+                    <td className="p-3 border border-gray-400 font-bold text-center text-yellow-800 bg-yellow-200">{summaryTotals.remUntouched}</td>
+                    <td className="p-3 border border-gray-400 font-bold text-center text-orange-800 bg-orange-200">{summaryTotals.remPending}</td>
+                    <td className="p-3 border border-gray-400 font-bold text-center text-yellow-900 bg-yellow-300">{summaryTotals.remFuture}</td>
+                    <td className="p-3 border border-gray-400 font-bold text-center bg-red-200 text-red-900">{summaryTotals.remTotal}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {reportTab === 'totalSummary' && (
+          <div className="space-y-6">
+            <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex flex-col md:flex-row items-center justify-between gap-4">
+               <h2 className="text-lg font-semibold text-gray-700">Total All-Time Assignment & Follow-Up Report:</h2>
+               <button onClick={handleExportTotalSummary} className="bg-green-600 hover:bg-green-700 text-white py-2 px-4 rounded text-sm font-medium transition-colors flex items-center gap-2">
+                 <i className="fa-solid fa-file-csv"></i> Export CSV
+               </button>
+            </div>
+
+            <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-x-auto">
+              <table className="w-full text-left text-sm whitespace-nowrap">
+                <thead>
+                  <tr>
+                    <th className="p-3 border border-gray-300 bg-gray-50 text-gray-700">User Name</th>
+                    <th className="p-3 border border-gray-300 bg-gray-50 text-gray-700 text-center">Total Assigned</th>
+                    <th className="p-3 border border-gray-300 bg-cyan-50 text-cyan-800 text-center">Total Followup Done (Fresh)</th>
+                    <th className="p-3 border border-gray-300 bg-purple-50 text-purple-800 text-center">Total Followup Done (Resched)</th>
+                    <th className="p-3 border border-gray-300 bg-yellow-50 text-yellow-800 text-center">Rem (Untouched)</th>
+                    <th className="p-3 border border-gray-300 bg-orange-50 text-orange-800 text-center">Rem (Pending)</th>
+                    <th className="p-3 border border-gray-300 bg-yellow-100 text-yellow-900 text-center">Rem (Future)</th>
+                    <th className="p-3 border border-gray-300 bg-red-50 text-red-800 text-center">Total Remaining</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {totalData.map(s => (
+                    <tr key={s.name} className="hover:bg-gray-50">
+                      <td className="p-3 border border-gray-300 font-medium text-gray-800">{s.name}</td>
+                      <td className="p-3 border border-gray-300 text-center">{s.assigned}</td>
+                      
+                      <td className="p-3 border border-gray-300 text-center bg-cyan-50">
+                        {s.followupDoneFresh > 0 ? (
+                          <button onClick={() => openBreakdownModal(s.email, 'allTime', 'fresh')} className="text-cyan-700 underline font-bold hover:text-cyan-900 px-2 py-1 rounded" title="View Fresh Followups">
+                            {s.followupDoneFresh}
+                          </button>
+                        ) : <span className="text-gray-400">0</span>}
+                      </td>
+
+                      <td className="p-3 border border-gray-300 text-center bg-purple-50">
+                        {s.followupDoneResched > 0 ? (
+                          <button onClick={() => openBreakdownModal(s.email, 'allTime', 'resched')} className="text-purple-700 underline font-bold hover:text-purple-900 px-2 py-1 rounded" title="View Rescheduled Followups">
+                            {s.followupDoneResched}
+                          </button>
+                        ) : <span className="text-gray-400">0</span>}
+                      </td>
+
+                      <td className="p-3 border border-gray-300 text-center bg-yellow-50">
+                        {s.remUntouched > 0 ? (
+                          <button onClick={() => openBreakdownModal(s.email, 'allTime', 'remUntouched')} className="text-yellow-800 underline font-bold hover:text-yellow-900 px-2 py-1 rounded">{s.remUntouched}</button>
+                        ) : <span className="text-gray-400">0</span>}
+                      </td>
+                      
+                      <td className="p-3 border border-gray-300 text-center bg-orange-50">
+                        {s.remPending > 0 ? (
+                          <button onClick={() => openBreakdownModal(s.email, 'allTime', 'remPending')} className="text-orange-800 underline font-bold hover:text-orange-900 px-2 py-1 rounded">{s.remPending}</button>
+                        ) : <span className="text-gray-400">0</span>}
+                      </td>
+                      
+                      <td className="p-3 border border-gray-300 text-center bg-yellow-100">
+                        {s.remFuture > 0 ? (
+                          <button onClick={() => openBreakdownModal(s.email, 'allTime', 'remFuture')} className="text-yellow-900 underline font-bold hover:text-black px-2 py-1 rounded">{s.remFuture}</button>
+                        ) : <span className="text-gray-400">0</span>}
+                      </td>
+
+                      <td className="p-3 border border-gray-300 text-center bg-red-50 font-bold text-red-800">{s.remTotal}</td>
+                    </tr>
+                  ))}
+                  
+                  <tr className="bg-gray-100">
+                    <td className="p-3 border border-gray-400 font-bold text-gray-900">Grand Total</td>
+                    <td className="p-3 border border-gray-400 font-bold text-center text-gray-900">{totalAllTimeTotals.assigned}</td>
+                    <td className="p-3 border border-gray-400 font-bold text-center text-cyan-800 bg-cyan-100">{totalAllTimeTotals.followupDoneFresh}</td>
+                    <td className="p-3 border border-gray-400 font-bold text-center text-purple-800 bg-purple-100">{totalAllTimeTotals.followupDoneResched}</td>
+                    <td className="p-3 border border-gray-400 font-bold text-center text-yellow-800 bg-yellow-200">{totalAllTimeTotals.remUntouched}</td>
+                    <td className="p-3 border border-gray-400 font-bold text-center text-orange-800 bg-orange-200">{totalAllTimeTotals.remPending}</td>
+                    <td className="p-3 border border-gray-400 font-bold text-center text-yellow-900 bg-yellow-300">{totalAllTimeTotals.remFuture}</td>
+                    <td className="p-3 border border-gray-400 font-bold text-center bg-red-200 text-red-900">{totalAllTimeTotals.remTotal}</td>
                   </tr>
                 </tbody>
               </table>
@@ -1138,7 +1454,12 @@
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4 animate-fade-in">
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl flex flex-col max-h-[90vh] overflow-hidden">
               <div className="bg-blue-600 text-white p-4 flex justify-between items-center">
-                <h2 className="text-xl font-bold">Follow-up Breakdown</h2>
+                <h2 className="text-xl font-bold">
+                  Follow-up Details
+                  <span className="text-blue-200 text-lg ml-2 font-medium">
+                    ({breakdownMode === 'allTime' ? 'All Time' : summaryDate})
+                  </span>
+                </h2>
                 <button onClick={() => setIsBreakdownModalOpen(false)} className="text-white hover:text-gray-200 text-xl leading-none">
                   <i className="fa-solid fa-xmark"></i>
                 </button>
@@ -1151,7 +1472,8 @@
                     value={breakdownUser} 
                     onChange={(e) => {
                       setBreakdownUser(e.target.value);
-                      setModalView('breakdown');
+                      if (breakdownSubType.startsWith('rem')) setModalView('drilldown');
+                      else setModalView('breakdown');
                     }}
                     className="w-full border border-gray-300 rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                   >
@@ -1195,7 +1517,9 @@
                             </tr>
                           ))}
                           <tr className="bg-blue-50 font-bold border-t-2 border-blue-200">
-                            <td className="p-3 text-right text-blue-900">Total Follow-ups for {summaryDate}:</td>
+                            <td className="p-3 text-right text-blue-900">
+                              {breakdownMode === 'daily' ? `Total for ${summaryDate}:` : 'Total (All-time):'}
+                            </td>
                             <td className="p-3 text-center text-blue-800 text-lg">{total}</td>
                           </tr>
                         </tbody>
@@ -1206,13 +1530,20 @@
 
                 {modalView === 'drilldown' && (
                   <div>
-                    <div className="flex items-center mb-4 gap-2">
-                      <button onClick={() => setModalView('breakdown')} className="text-gray-600 hover:text-gray-900 bg-gray-200 hover:bg-gray-300 px-3 py-1.5 rounded text-sm font-medium transition-colors">
-                        <i className="fa-solid fa-arrow-left mr-1"></i> Back
+                    <div className="flex items-center justify-between mb-4 gap-2">
+                      <div className="flex items-center gap-2 flex-1 truncate">
+                        {!breakdownSubType.startsWith('rem') && (
+                          <button onClick={() => setModalView('breakdown')} className="text-gray-600 hover:text-gray-900 bg-gray-200 hover:bg-gray-300 px-3 py-1.5 rounded text-sm font-medium transition-colors">
+                            <i className="fa-solid fa-arrow-left mr-1"></i> Back
+                          </button>
+                        )}
+                        <h3 className="text-md font-bold text-gray-800 truncate">
+                          {drilldownHeaderText}
+                        </h3>
+                      </div>
+                      <button onClick={handleExportDrilldown} className="bg-green-600 hover:bg-green-700 text-white py-1.5 px-3 rounded text-sm font-medium transition-colors flex items-center gap-1.5">
+                        <i className="fa-solid fa-file-csv"></i> Export
                       </button>
-                      <h3 className="text-md font-bold text-gray-800 flex-1 truncate">
-                        Leads marked as "{selectedDrilldownStatus}"
-                      </h3>
                     </div>
                     
                     <div className="bg-white border border-gray-200 rounded-lg overflow-x-auto shadow-sm w-full">
@@ -1221,6 +1552,7 @@
                           <tr>
                             <th className="p-3 font-semibold uppercase tracking-wider text-xs">Name</th>
                             <th className="p-3 font-semibold uppercase tracking-wider text-xs">Mobile No.</th>
+                            <th className="p-3 font-semibold uppercase tracking-wider text-xs text-blue-700">Resched. Date</th>
                             <th className="p-3 font-semibold uppercase tracking-wider text-xs">Remarks</th>
                             <th className="p-3 font-semibold uppercase tracking-wider text-xs text-center">Action</th>
                           </tr>
@@ -1233,6 +1565,7 @@
                               <tr key={lead.sn} className="border-b hover:bg-gray-50 last:border-0">
                                 <td className="p-3 font-medium text-gray-800">{lead.customerName}</td>
                                 <td className="p-3 text-gray-600">{lead.mobileNumber}</td>
+                                <td className="p-3 text-blue-600 font-medium">{normalizeDate(lead.reScheduledDate) || '-'}</td>
                                 <td className="p-3 text-gray-600 truncate max-w-[150px]" title={latestRemark}>{latestRemark}</td>
                                 <td className="p-3 text-center">
                                   <button 
@@ -1270,6 +1603,12 @@
                         <div>
                           <div className="font-bold text-gray-800 text-lg">{selectedLead.customerName}</div>
                           <div className="text-sm text-gray-500 font-medium mt-1">{selectedLead.mobileNumber} &bull; Model: {selectedLead.modelName}</div>
+                          {normalizeDate(selectedLead.reScheduledDate) && (
+                            <div className="text-sm font-bold text-orange-600 mt-2 flex items-center bg-orange-50 inline-block px-2 py-1 rounded border border-orange-100">
+                              <i className="fa-regular fa-calendar-check mr-2"></i> 
+                              Scheduled for: {normalizeDate(selectedLead.reScheduledDate)}
+                            </div>
+                          )}
                         </div>
                         <a href={`tel:${selectedLead.mobileNumber}`} className="text-green-700 bg-green-50 hover:bg-green-100 px-4 py-2 rounded-md text-sm font-bold border border-green-200 transition-colors flex items-center">
                           <i className="fa-solid fa-phone mr-2"></i> Call
@@ -1278,15 +1617,23 @@
                       <div className="bg-gray-50 p-3 rounded-lg border border-gray-200">
                         <div className="font-bold text-gray-700 mb-3 uppercase tracking-wide text-xs">Full Remarks History:</div>
                         <div className="space-y-3 max-h-60 overflow-y-auto pr-2">
-                          {parseRemarks(selectedLead.remarks).map((h, idx) => (
-                            <div key={idx} className="border-l-4 border-blue-400 pl-3 py-2 bg-white rounded shadow-sm">
-                              <div className="flex justify-between items-center mb-1.5">
-                                <span className="text-gray-500 font-medium text-xs">{h.date}</span>
-                                <span className={`font-bold text-[10px] px-2 py-0.5 rounded ${h.status === selectedDrilldownStatus && h.date === summaryDate ? 'bg-blue-100 text-blue-700' : 'bg-gray-200 text-gray-700'}`}>{h.status}</span>
+                          {parseRemarks(selectedLead.remarks).length === 0 ? (
+                             <div className="text-gray-500 italic text-sm">No remarks history available yet.</div>
+                          ) : parseRemarks(selectedLead.remarks).map((h, idx) => {
+                            const isHighlighted = breakdownMode === 'daily' 
+                                ? (h.status === selectedDrilldownStatus && h.date === summaryDate)
+                                : (h.status === selectedDrilldownStatus);
+                            
+                            return (
+                              <div key={idx} className="border-l-4 border-blue-400 pl-3 py-2 bg-white rounded shadow-sm">
+                                <div className="flex justify-between items-center mb-1.5">
+                                  <span className="text-gray-500 font-medium text-xs">{h.date}</span>
+                                  <span className={`font-bold text-[10px] px-2 py-0.5 rounded ${isHighlighted ? 'bg-blue-100 text-blue-700' : 'bg-gray-200 text-gray-700'}`}>{h.status}</span>
+                                </div>
+                                <div className="text-gray-800 text-sm leading-relaxed">{h.text}</div>
                               </div>
-                              <div className="text-gray-800 text-sm leading-relaxed">{h.text}</div>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       </div>
                     </div>

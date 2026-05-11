@@ -716,7 +716,7 @@
     const [newRemark, setNewRemark] = useState('');
     const [isSaving, setIsSaving] = useState(false);
 
-    const isClosedStatus = status === 'Not Interested' || status === 'Phone No. Wrong / Incoming off' || status === 'Closed';
+    const isClosedStatus = ['Not Interested', 'Phone No. Wrong / Incoming off', 'Closed'].includes(status);
 
     const handleUpdate = async (e) => {
       e.preventDefault();
@@ -892,7 +892,6 @@
 
         return { sourceBucket, actionBucket, actionStatus, remainingBucket, currentStatus, isUntouchedCurrent };
     };
-
 
     // --- Details Logic ---
     const reportLeads = leads.filter(l => {
@@ -1271,13 +1270,13 @@
               <table className="w-full text-left text-sm whitespace-nowrap">
                 <thead className="bg-gray-50 text-gray-600 border-b">
                   <tr>
-                    <th className="p-2 border border-gray-300">SN / Customer</th>
-                    <th className="p-2 border border-gray-300">Mobile</th>
-                    <th className="p-2 border border-gray-300">Model</th>
-                    {user.role === 'Admin' && <th className="p-2 border border-gray-300">Assigned To</th>}
-                    <th className="p-2 border border-gray-300">Status</th>
-                    <th className="p-2 border border-gray-300">Re-Schedule</th>
-                    <th className="p-2 border border-gray-300 max-w-[200px]">Remarks (Hover to View All)</th>
+                    <th className="p-3">SN / Customer</th>
+                    <th className="p-3">Mobile</th>
+                    <th className="p-3">Model</th>
+                    {user.role === 'Admin' && <th className="p-3">Assigned To</th>}
+                    <th className="p-3">Status</th>
+                    <th className="p-3">Re-Schedule</th>
+                    <th className="p-3 max-w-[200px]">Remarks (Hover to View All)</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1289,13 +1288,13 @@
 
                     return (
                       <tr key={l.sn} className="border-b hover:bg-gray-50">
-                        <td className="p-2 border border-gray-200"><div className="font-medium text-gray-800">{l.customerName}</div><div className="text-xs text-gray-500">SN: {l.sn}</div></td>
-                        <td className="p-2 border border-gray-200">{l.mobileNumber}</td>
-                        <td className="p-2 border border-gray-200">{l.modelName}</td>
-                        {user.role === 'Admin' && <td className="p-2 border border-gray-200">{assignedUser ? assignedUser.name : '-'}</td>}
-                        <td className="p-2 border border-gray-200"><span className="px-2 py-1 bg-gray-100 rounded font-medium">{l.followUpStatus || 'Pending'}</span></td>
-                        <td className="p-2 border border-gray-200">{normalizeDate(l.reScheduledDate) || '-'}</td>
-                        <td className="p-2 border border-gray-200 truncate max-w-[200px] cursor-help" title={tooltipText}>{latestRemark}</td>
+                        <td className="p-3"><div className="font-medium text-gray-800">{l.customerName}</div><div className="text-xs text-gray-500">SN: {l.sn}</div></td>
+                        <td className="p-3">{l.mobileNumber}</td>
+                        <td className="p-3">{l.modelName}</td>
+                        {user.role === 'Admin' && <td className="p-3">{assignedUser ? assignedUser.name : '-'}</td>}
+                        <td className="p-3"><span className="px-2 py-1 bg-gray-100 rounded font-medium">{l.followUpStatus || 'Pending'}</span></td>
+                        <td className="p-3">{normalizeDate(l.reScheduledDate) || '-'}</td>
+                        <td className="p-3 truncate max-w-[200px] cursor-help" title={tooltipText}>{latestRemark}</td>
                       </tr>
                     )
                   })}
@@ -1330,100 +1329,100 @@
 
             <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-x-auto">
               <table className="w-full text-left text-sm whitespace-nowrap border-collapse">
-                <thead>
+                <thead className="bg-gray-50 text-gray-600 border-b">
                   <tr>
-                    <th rowSpan="2" className="p-2 border border-gray-300 bg-gray-50 text-gray-700 align-middle">{groupBy === 'status' ? 'Follow-up Status' : 'User Name'}</th>
-                    <th rowSpan="2" className="p-2 border border-gray-300 bg-gray-50 text-gray-700 text-center align-middle">Opening</th>
-                    <th rowSpan="2" className="p-2 border border-gray-300 bg-gray-50 text-gray-700 text-center align-middle">New Assigned</th>
-                    <th rowSpan="2" className="p-2 border border-gray-300 bg-gray-50 text-gray-700 text-center align-middle">Rescheduled</th>
-                    <th colSpan="2" className="p-2 border border-gray-300 bg-blue-50 text-blue-800 text-center">Followup Done</th>
-                    <th colSpan="3" className="p-2 border border-gray-300 bg-orange-50 text-orange-800 text-center">Remaining</th>
-                    <th rowSpan="2" className="p-2 border border-gray-300 bg-red-50 text-red-800 text-center align-middle">Total</th>
+                    <th rowSpan="2" className="px-2 py-1.5 border border-gray-300 align-middle text-center">{groupBy === 'status' ? 'Follow-up Status' : 'User Name'}</th>
+                    <th rowSpan="2" className="px-2 py-1.5 border border-gray-300 text-center align-middle">Opening</th>
+                    <th rowSpan="2" className="px-2 py-1.5 border border-gray-300 text-center align-middle">New Assigned</th>
+                    <th rowSpan="2" className="px-2 py-1.5 border border-gray-300 text-center align-middle">Rescheduled</th>
+                    <th colSpan="2" className="px-2 py-1.5 border border-gray-300 bg-blue-50 text-blue-800 text-center">Followup Done</th>
+                    <th colSpan="3" className="px-2 py-1.5 border border-gray-300 bg-orange-50 text-orange-800 text-center">Remaining</th>
+                    <th rowSpan="2" className="px-2 py-1.5 border border-gray-300 bg-red-50 text-red-800 text-center align-middle">Total Remaining</th>
                   </tr>
                   <tr>
-                    <th className="p-2 border border-gray-300 bg-cyan-50 text-cyan-800 text-center text-xs">Fresh</th>
-                    <th className="p-2 border border-gray-300 bg-purple-50 text-purple-800 text-center text-xs">Rescheduled</th>
-                    <th className="p-2 border border-gray-300 bg-yellow-50 text-yellow-800 text-center text-xs">Untouched</th>
-                    <th className="p-2 border border-gray-300 bg-orange-50 text-orange-800 text-center text-xs">Pending</th>
-                    <th className="p-2 border border-gray-300 bg-yellow-100 text-yellow-900 text-center text-xs">Future</th>
+                    <th className="px-2 py-1.5 border border-gray-300 bg-cyan-50 text-cyan-800 text-center text-xs font-semibold">Fresh</th>
+                    <th className="px-2 py-1.5 border border-gray-300 bg-purple-50 text-purple-800 text-center text-xs font-semibold">Rescheduled</th>
+                    <th className="px-2 py-1.5 border border-gray-300 bg-yellow-50 text-yellow-800 text-center text-xs font-semibold">Untouched</th>
+                    <th className="px-2 py-1.5 border border-gray-300 bg-orange-50 text-orange-800 text-center text-xs font-semibold">Pending</th>
+                    <th className="px-2 py-1.5 border border-gray-300 bg-yellow-100 text-yellow-900 text-center text-xs font-semibold">Future</th>
                   </tr>
                 </thead>
                 <tbody>
                   {summaryRenderData.map(s => (
                     <tr key={s.id} className="hover:bg-gray-50">
-                      <td className="p-2 border border-gray-200 font-medium text-gray-800">{s.name}</td>
-                      <td className="p-2 border border-gray-200 text-center">
+                      <td className="px-2 py-1.5 border border-gray-200 font-medium text-gray-800">{s.name}</td>
+                      <td className="px-2 py-1.5 border border-gray-200 text-center">
                         {s.opening > 0 ? <button onClick={() => openBreakdownModal(s.id, 'daily', 'opening')} className="text-blue-600 font-bold hover:underline">{s.opening}</button> : <span className="text-gray-400">0</span>}
                       </td>
-                      <td className="p-2 border border-gray-200 text-center">
+                      <td className="px-2 py-1.5 border border-gray-200 text-center">
                         {s.newAssigned > 0 ? <button onClick={() => openBreakdownModal(s.id, 'daily', 'newAssigned')} className="text-blue-600 font-bold hover:underline">{s.newAssigned}</button> : <span className="text-gray-400">0</span>}
                       </td>
-                      <td className="p-2 border border-gray-200 text-center">
+                      <td className="px-2 py-1.5 border border-gray-200 text-center">
                         {s.rescheduled > 0 ? <button onClick={() => openBreakdownModal(s.id, 'daily', 'rescheduled')} className="text-blue-600 font-bold hover:underline">{s.rescheduled}</button> : <span className="text-gray-400">0</span>}
                       </td>
                       
-                      <td className="p-2 border border-gray-200 text-center bg-cyan-50/50">
+                      <td className="px-2 py-1.5 border border-gray-200 text-center bg-cyan-50/50">
                         {s.followupDoneFresh > 0 ? (
                           <button onClick={() => openBreakdownModal(s.id, 'daily', 'fresh')} className="text-cyan-700 font-bold hover:underline">{s.followupDoneFresh}</button>
                         ) : <span className="text-gray-400">0</span>}
                       </td>
 
-                      <td className="p-2 border border-gray-200 text-center bg-purple-50/50">
+                      <td className="px-2 py-1.5 border border-gray-200 text-center bg-purple-50/50">
                         {s.followupDoneResched > 0 ? (
                           <button onClick={() => openBreakdownModal(s.id, 'daily', 'resched')} className="text-purple-700 font-bold hover:underline">{s.followupDoneResched}</button>
                         ) : <span className="text-gray-400">0</span>}
                       </td>
 
-                      <td className="p-2 border border-gray-200 text-center bg-yellow-50/50">
+                      <td className="px-2 py-1.5 border border-gray-200 text-center bg-yellow-50/50">
                         {s.remUntouched > 0 ? (
                           <button onClick={() => openBreakdownModal(s.id, 'daily', 'remUntouched')} className="text-yellow-800 font-bold hover:underline">{s.remUntouched}</button>
                         ) : <span className="text-gray-400">0</span>}
                       </td>
                       
-                      <td className="p-2 border border-gray-200 text-center bg-orange-50/50">
+                      <td className="px-2 py-1.5 border border-gray-200 text-center bg-orange-50/50">
                         {s.remPending > 0 ? (
                           <button onClick={() => openBreakdownModal(s.id, 'daily', 'remPending')} className="text-orange-800 font-bold hover:underline">{s.remPending}</button>
                         ) : <span className="text-gray-400">0</span>}
                       </td>
                       
-                      <td className="p-2 border border-gray-200 text-center bg-yellow-100/50">
+                      <td className="px-2 py-1.5 border border-gray-200 text-center bg-yellow-100/50">
                         {s.remFuture > 0 ? (
                           <button onClick={() => openBreakdownModal(s.id, 'daily', 'remFuture')} className="text-yellow-900 font-bold hover:underline">{s.remFuture}</button>
                         ) : <span className="text-gray-400">0</span>}
                       </td>
 
-                      <td className="p-2 border border-gray-200 text-center bg-red-50 font-bold text-red-800">{s.remTotal}</td>
+                      <td className="px-2 py-1.5 border border-gray-200 text-center bg-red-50 font-bold text-red-800">{s.remTotal}</td>
                     </tr>
                   ))}
                   
                   {/* Grand Total Row */}
                   <tr className="bg-gray-100">
-                    <td className="p-2 border border-gray-300 font-bold text-gray-900 cursor-help" title="Click numbers to drilldown overall totals">Grand Total</td>
-                    <td className="p-2 border border-gray-300 font-bold text-center text-blue-700">
+                    <td className="px-2 py-1.5 border border-gray-300 font-bold text-gray-900 cursor-help" title="Click numbers to drilldown overall totals">Grand Total</td>
+                    <td className="px-2 py-1.5 border border-gray-300 font-bold text-center text-blue-700">
                         {grandTotals.opening > 0 ? <button onClick={() => openBreakdownModal('ALL', 'daily', 'opening')} className="hover:underline">{grandTotals.opening}</button> : 0}
                     </td>
-                    <td className="p-2 border border-gray-300 font-bold text-center text-blue-700">
+                    <td className="px-2 py-1.5 border border-gray-300 font-bold text-center text-blue-700">
                         {grandTotals.newAssigned > 0 ? <button onClick={() => openBreakdownModal('ALL', 'daily', 'newAssigned')} className="hover:underline">{grandTotals.newAssigned}</button> : 0}
                     </td>
-                    <td className="p-2 border border-gray-300 font-bold text-center text-blue-700">
+                    <td className="px-2 py-1.5 border border-gray-300 font-bold text-center text-blue-700">
                         {grandTotals.rescheduled > 0 ? <button onClick={() => openBreakdownModal('ALL', 'daily', 'rescheduled')} className="hover:underline">{grandTotals.rescheduled}</button> : 0}
                     </td>
-                    <td className="p-2 border border-gray-300 font-bold text-center text-cyan-800 bg-cyan-100">
+                    <td className="px-2 py-1.5 border border-gray-300 font-bold text-center text-cyan-800 bg-cyan-100">
                         {grandTotals.followupDoneFresh > 0 ? <button onClick={() => openBreakdownModal('ALL', 'daily', 'fresh')} className="hover:underline">{grandTotals.followupDoneFresh}</button> : 0}
                     </td>
-                    <td className="p-2 border border-gray-300 font-bold text-center text-purple-800 bg-purple-100">
+                    <td className="px-2 py-1.5 border border-gray-300 font-bold text-center text-purple-800 bg-purple-100">
                         {grandTotals.followupDoneResched > 0 ? <button onClick={() => openBreakdownModal('ALL', 'daily', 'resched')} className="hover:underline">{grandTotals.followupDoneResched}</button> : 0}
                     </td>
-                    <td className="p-2 border border-gray-300 font-bold text-center text-yellow-800 bg-yellow-200">
+                    <td className="px-2 py-1.5 border border-gray-300 font-bold text-center text-yellow-800 bg-yellow-200">
                         {grandTotals.remUntouched > 0 ? <button onClick={() => openBreakdownModal('ALL', 'daily', 'remUntouched')} className="hover:underline">{grandTotals.remUntouched}</button> : 0}
                     </td>
-                    <td className="p-2 border border-gray-300 font-bold text-center text-orange-800 bg-orange-200">
+                    <td className="px-2 py-1.5 border border-gray-300 font-bold text-center text-orange-800 bg-orange-200">
                         {grandTotals.remPending > 0 ? <button onClick={() => openBreakdownModal('ALL', 'daily', 'remPending')} className="hover:underline">{grandTotals.remPending}</button> : 0}
                     </td>
-                    <td className="p-2 border border-gray-300 font-bold text-center text-yellow-900 bg-yellow-300">
+                    <td className="px-2 py-1.5 border border-gray-300 font-bold text-center text-yellow-900 bg-yellow-300">
                         {grandTotals.remFuture > 0 ? <button onClick={() => openBreakdownModal('ALL', 'daily', 'remFuture')} className="hover:underline">{grandTotals.remFuture}</button> : 0}
                     </td>
-                    <td className="p-2 border border-gray-300 font-bold text-center bg-red-200 text-red-900">{grandTotals.remTotal}</td>
+                    <td className="px-2 py-1.5 border border-gray-300 font-bold text-center bg-red-200 text-red-900">{grandTotals.remTotal}</td>
                   </tr>
                 </tbody>
               </table>
@@ -1448,31 +1447,31 @@
 
             <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-x-auto">
               <table className="w-full text-left text-sm whitespace-nowrap border-collapse">
-                <thead>
+                <thead className="bg-gray-50 text-gray-600 border-b">
                   <tr>
-                    <th rowSpan="2" className="p-2 border border-gray-300 bg-gray-50 text-gray-700 align-middle">{groupBy === 'status' ? 'Follow-up Status' : 'User Name'}</th>
-                    <th rowSpan="2" className="p-2 border border-gray-300 bg-gray-50 text-gray-700 text-center align-middle">Total Assigned</th>
-                    <th colSpan="2" className="p-2 border border-gray-300 bg-blue-50 text-blue-800 text-center">Total Followup Done</th>
-                    <th colSpan="3" className="p-2 border border-gray-300 bg-orange-50 text-orange-800 text-center">Remaining</th>
-                    <th rowSpan="2" className="p-2 border border-gray-300 bg-red-50 text-red-800 text-center align-middle">Total</th>
+                    <th rowSpan="2" className="px-2 py-1.5 border border-gray-300 align-middle text-center">{groupBy === 'status' ? 'Follow-up Status' : 'User Name'}</th>
+                    <th rowSpan="2" className="px-2 py-1.5 border border-gray-300 text-center align-middle">Total Assigned</th>
+                    <th colSpan="2" className="px-2 py-1.5 border border-gray-300 bg-blue-50 text-blue-800 text-center">Total Followup Done</th>
+                    <th colSpan="3" className="px-2 py-1.5 border border-gray-300 bg-orange-50 text-orange-800 text-center">Remaining</th>
+                    <th rowSpan="2" className="px-2 py-1.5 border border-gray-300 bg-red-50 text-red-800 text-center align-middle">Total Remaining</th>
                   </tr>
                   <tr>
-                    <th className="p-2 border border-gray-300 bg-cyan-50 text-cyan-800 text-center text-xs">Fresh</th>
-                    <th className="p-2 border border-gray-300 bg-purple-50 text-purple-800 text-center text-xs">Rescheduled</th>
-                    <th className="p-2 border border-gray-300 bg-yellow-50 text-yellow-800 text-center text-xs">Untouched</th>
-                    <th className="p-2 border border-gray-300 bg-orange-50 text-orange-800 text-center text-xs">Pending</th>
-                    <th className="p-2 border border-gray-300 bg-yellow-100 text-yellow-900 text-center text-xs">Future</th>
+                    <th className="px-2 py-1.5 border border-gray-300 bg-cyan-50 text-cyan-800 text-center text-xs font-semibold">Fresh</th>
+                    <th className="px-2 py-1.5 border border-gray-300 bg-purple-50 text-purple-800 text-center text-xs font-semibold">Rescheduled</th>
+                    <th className="px-2 py-1.5 border border-gray-300 bg-yellow-50 text-yellow-800 text-center text-xs font-semibold">Untouched</th>
+                    <th className="px-2 py-1.5 border border-gray-300 bg-orange-50 text-orange-800 text-center text-xs font-semibold">Pending</th>
+                    <th className="px-2 py-1.5 border border-gray-300 bg-yellow-100 text-yellow-900 text-center text-xs font-semibold">Future</th>
                   </tr>
                 </thead>
                 <tbody>
                   {totalRenderData.map(s => (
                     <tr key={s.id} className="hover:bg-gray-50">
-                      <td className="p-2 border border-gray-200 font-medium text-gray-800">{s.name}</td>
-                      <td className="p-2 border border-gray-200 text-center">
+                      <td className="px-2 py-1.5 border border-gray-200 font-medium text-gray-800">{s.name}</td>
+                      <td className="px-2 py-1.5 border border-gray-200 text-center">
                         {s.assigned > 0 ? <button onClick={() => openBreakdownModal(s.id, 'allTime', 'assigned')} className="text-blue-600 font-bold hover:underline">{s.assigned}</button> : <span className="text-gray-400">0</span>}
                       </td>
                       
-                      <td className="p-2 border border-gray-200 text-center bg-cyan-50/50">
+                      <td className="px-2 py-1.5 border border-gray-200 text-center bg-cyan-50/50">
                         {s.followupDoneFresh > 0 ? (
                           <button onClick={() => openBreakdownModal(s.id, 'allTime', 'fresh')} className="text-cyan-700 font-bold hover:underline" title="View Fresh Followups">
                             {s.followupDoneFresh}
@@ -1480,7 +1479,7 @@
                         ) : <span className="text-gray-400">0</span>}
                       </td>
 
-                      <td className="p-2 border border-gray-200 text-center bg-purple-50/50">
+                      <td className="px-2 py-1.5 border border-gray-200 text-center bg-purple-50/50">
                         {s.followupDoneResched > 0 ? (
                           <button onClick={() => openBreakdownModal(s.id, 'allTime', 'resched')} className="text-purple-700 font-bold hover:underline" title="View Rescheduled Followups">
                             {s.followupDoneResched}
@@ -1488,49 +1487,49 @@
                         ) : <span className="text-gray-400">0</span>}
                       </td>
 
-                      <td className="p-2 border border-gray-200 text-center bg-yellow-50/50">
+                      <td className="px-2 py-1.5 border border-gray-200 text-center bg-yellow-50/50">
                         {s.remUntouched > 0 ? (
                           <button onClick={() => openBreakdownModal(s.id, 'allTime', 'remUntouched')} className="text-yellow-800 font-bold hover:underline">{s.remUntouched}</button>
                         ) : <span className="text-gray-400">0</span>}
                       </td>
                       
-                      <td className="p-2 border border-gray-200 text-center bg-orange-50/50">
+                      <td className="px-2 py-1.5 border border-gray-200 text-center bg-orange-50/50">
                         {s.remPending > 0 ? (
                           <button onClick={() => openBreakdownModal(s.id, 'allTime', 'remPending')} className="text-orange-800 font-bold hover:underline">{s.remPending}</button>
                         ) : <span className="text-gray-400">0</span>}
                       </td>
                       
-                      <td className="p-2 border border-gray-200 text-center bg-yellow-100/50">
+                      <td className="px-2 py-1.5 border border-gray-200 text-center bg-yellow-100/50">
                         {s.remFuture > 0 ? (
                           <button onClick={() => openBreakdownModal(s.id, 'allTime', 'remFuture')} className="text-yellow-900 font-bold hover:underline">{s.remFuture}</button>
                         ) : <span className="text-gray-400">0</span>}
                       </td>
 
-                      <td className="p-2 border border-gray-200 text-center bg-red-50 font-bold text-red-800">{s.remTotal}</td>
+                      <td className="px-2 py-1.5 border border-gray-200 text-center bg-red-50 font-bold text-red-800">{s.remTotal}</td>
                     </tr>
                   ))}
                   
                   <tr className="bg-gray-100">
-                    <td className="p-2 border border-gray-300 font-bold text-gray-900 cursor-help" title="Click numbers to drilldown overall totals">Grand Total</td>
-                    <td className="p-2 border border-gray-300 font-bold text-center text-blue-700">
+                    <td className="px-2 py-1.5 border border-gray-300 font-bold text-gray-900 cursor-help" title="Click numbers to drilldown overall totals">Grand Total</td>
+                    <td className="px-2 py-1.5 border border-gray-300 font-bold text-center text-blue-700">
                         {totalGrandTotals.assigned > 0 ? <button onClick={() => openBreakdownModal('ALL', 'allTime', 'assigned')} className="hover:underline">{totalGrandTotals.assigned}</button> : 0}
                     </td>
-                    <td className="p-2 border border-gray-300 font-bold text-center text-cyan-800 bg-cyan-100">
+                    <td className="px-2 py-1.5 border border-gray-300 font-bold text-center text-cyan-800 bg-cyan-100">
                         {totalGrandTotals.followupDoneFresh > 0 ? <button onClick={() => openBreakdownModal('ALL', 'allTime', 'fresh')} className="hover:underline">{totalGrandTotals.followupDoneFresh}</button> : 0}
                     </td>
-                    <td className="p-2 border border-gray-300 font-bold text-center text-purple-800 bg-purple-100">
+                    <td className="px-2 py-1.5 border border-gray-300 font-bold text-center text-purple-800 bg-purple-100">
                         {totalGrandTotals.followupDoneResched > 0 ? <button onClick={() => openBreakdownModal('ALL', 'allTime', 'resched')} className="hover:underline">{totalGrandTotals.followupDoneResched}</button> : 0}
                     </td>
-                    <td className="p-2 border border-gray-300 font-bold text-center text-yellow-800 bg-yellow-200">
+                    <td className="px-2 py-1.5 border border-gray-300 font-bold text-center text-yellow-800 bg-yellow-200">
                         {totalGrandTotals.remUntouched > 0 ? <button onClick={() => openBreakdownModal('ALL', 'allTime', 'remUntouched')} className="hover:underline">{totalGrandTotals.remUntouched}</button> : 0}
                     </td>
-                    <td className="p-2 border border-gray-300 font-bold text-center text-orange-800 bg-orange-200">
+                    <td className="px-2 py-1.5 border border-gray-300 font-bold text-center text-orange-800 bg-orange-200">
                         {totalGrandTotals.remPending > 0 ? <button onClick={() => openBreakdownModal('ALL', 'allTime', 'remPending')} className="hover:underline">{totalGrandTotals.remPending}</button> : 0}
                     </td>
-                    <td className="p-2 border border-gray-300 font-bold text-center text-yellow-900 bg-yellow-300">
+                    <td className="px-2 py-1.5 border border-gray-300 font-bold text-center text-yellow-900 bg-yellow-300">
                         {totalGrandTotals.remFuture > 0 ? <button onClick={() => openBreakdownModal('ALL', 'allTime', 'remFuture')} className="hover:underline">{totalGrandTotals.remFuture}</button> : 0}
                     </td>
-                    <td className="p-2 border border-gray-300 font-bold text-center bg-red-200 text-red-900">{totalGrandTotals.remTotal}</td>
+                    <td className="px-2 py-1.5 border border-gray-300 font-bold text-center bg-red-200 text-red-900">{totalGrandTotals.remTotal}</td>
                   </tr>
                 </tbody>
               </table>
@@ -1650,13 +1649,13 @@
                   <div>
                     <div className="flex items-center justify-between mb-4 gap-2">
                       <div className="flex items-center gap-2 flex-1 truncate">
-                        {(breakdownSubType === 'fresh' || breakdownSubType === 'resched') && (
+                        {(breakdownSubType === 'fresh' || breakdownSubType === 'resched' || breakdownSubType === 'opening' || breakdownSubType === 'newAssigned' || breakdownSubType === 'rescheduled' || breakdownSubType === 'assigned') && (
                           <button onClick={() => setModalView('breakdown')} className="text-gray-600 hover:text-gray-900 bg-gray-200 hover:bg-gray-300 px-3 py-1.5 rounded text-sm font-medium transition-colors">
                             <i className="fa-solid fa-arrow-left mr-1"></i> Back
                           </button>
                         )}
                         <h3 className="text-md font-bold text-gray-800 truncate">
-                          {drilldownHeaderText} {selectedDrilldownKey !== 'ALL' && `- [${pivotAxis === 'status' ? selectedDrilldownKey : getUserName(selectedDrilldownKey)}]`}
+                          {drilldownHeaderText}
                         </h3>
                       </div>
                     </div>
@@ -1741,9 +1740,10 @@
                           {parseRemarks(selectedLead.remarks).length === 0 ? (
                              <div className="text-gray-500 italic text-sm">No remarks history available yet.</div>
                           ) : parseRemarks(selectedLead.remarks).map((h, idx) => {
+                            const historyLength = parseRemarks(selectedLead.remarks).length;
                             const isHighlighted = breakdownMode === 'daily' 
-                                ? (h.status === selectedDrilldownStatus && h.date === summaryDate)
-                                : (h.status === selectedDrilldownStatus);
+                                ? h.date === summaryDate 
+                                : idx === historyLength - 1;
                             
                             return (
                               <div key={idx} className="border-l-4 border-blue-400 pl-3 py-2 bg-white rounded shadow-sm">

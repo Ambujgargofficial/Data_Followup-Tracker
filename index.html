@@ -39,6 +39,7 @@
   const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbw2T__s9YBHwOO7q-7zeoVznO2QcXlrpcMJ8TbUhWeaz7sz3NZ-Vfc_93uNTm9HXIX1_g/exec"; 
 
   const STATUS_OPTIONS = ["Hot", "Warm", "Cold", "Not Interested", "Unreachable", "Call Not Pick", "Phone No. Wrong / Incoming off"];
+  const ALL_STATUSES = [...STATUS_OPTIONS, 'No Status'];
 
   // Helper function to call Google Apps Script
   const fetchAPI = async (action, payload = {}) => {
@@ -57,7 +58,7 @@
     }
   };
 
-  // --- Date Helpers to fix timezone issues ---
+  // --- Date Helpers ---
   const getLocalYYYYMMDD = () => {
     const d = new Date();
     const year = d.getFullYear();
@@ -729,7 +730,8 @@
       const updatedHistory = [...history, { 
         date: getLocalYYYYMMDD(), 
         status: status, 
-        text: newRemark.trim() 
+        text: newRemark.trim(),
+        nextDate: finalDate // Tracking future history perfectly
       }];
       
       const remarksString = JSON.stringify(updatedHistory);
@@ -827,15 +829,76 @@
 
     // ---- Summary Tab State ----
     const [summaryDate, setSummaryDate] = useState(getLocalYYYYMMDD());
+    const [groupBy, setGroupBy] = useState('user'); // 'user' or 'status'
     
     // ---- Breakdown Modal State ----
     const [isBreakdownModalOpen, setIsBreakdownModalOpen] = useState(false);
-    const [breakdownUser, setBreakdownUser] = useState('');
+    const [breakdownKey, setBreakdownKey] = useState(''); 
+    const [modalGroupBy, setModalGroupBy] = useState('user'); 
     const [breakdownMode, setBreakdownMode] = useState('daily'); 
     const [breakdownSubType, setBreakdownSubType] = useState('fresh'); 
     const [modalView, setModalView] = useState('breakdown'); 
-    const [selectedDrilldownStatus, setSelectedDrilldownStatus] = useState('');
+    const [selectedDrilldownKey, setSelectedDrilldownKey] = useState('ALL');
     const [selectedLead, setSelectedLead] = useState(null);
+
+    // --- Core Logic Helper for Reverse-Engineering Lead State ---
+    const analyzeLead = (l, targetDate) => {
+        const history = parseRemarks(l.remarks);
+        const normalizedAssign = normalizeDate(l.assignDate);
+        const normalizedResched = normalizeDate(l.reScheduledDate);
+        
+        const historyBeforeTarget = history.filter(h => h.date < targetDate);
+        const followupsOnTarget = history.filter(h => h.date === targetDate);
+        
+        const lastPastStatus = historyBeforeTarget.length > 0 ? historyBeforeTarget[historyBeforeTarget.length - 1].status : null;
+        const isClosedBefore = ['Not Interested', 'Phone No. Wrong / Incoming off', 'Closed'].includes(lastPastStatus);
+        const isUntouchedBefore = historyBeforeTarget.length === 0;
+
+        let sourceBucket = null; // 'opening', 'newAssigned', 'rescheduled'
+        
+        if (normalizedAssign === targetDate) {
+            sourceBucket = 'newAssigned';
+        } else if (followupsOnTarget.length > 0) {
+            // If they called today, it was either completely fresh (opening) or an old lead (rescheduled)
+            sourceBucket = isUntouchedBefore ? 'opening' : 'rescheduled';
+        } else {
+            // Not called today
+            if (isUntouchedBefore) {
+                if (normalizedAssign && normalizedAssign < targetDate) sourceBucket = 'opening';
+            } else if (!isClosedBefore) {
+                // To accurately capture past overdue items even if resched date wasn't tracked:
+                // We assume if it was touched but not closed, and not followed up today, 
+                // it is in the rescheduled bucket if its recorded resched date is today or earlier.
+                if (!normalizedResched || normalizedResched <= targetDate) {
+                    sourceBucket = 'rescheduled';
+                }
+            }
+        }
+
+        let actionBucket = null; // 'fresh', 'resched'
+        let actionStatus = null;
+        if (followupsOnTarget.length > 0) {
+            const isVeryFirstCall = history[0].date === targetDate;
+            actionBucket = isVeryFirstCall ? 'fresh' : 'resched';
+            actionStatus = followupsOnTarget[followupsOnTarget.length - 1].status;
+        }
+
+        // Remaining is based on current state (End of day view)
+        const currentStatus = l.followUpStatus || 'No Status';
+        const isClosedCurrent = ['Not Interested', 'Phone No. Wrong / Incoming off', 'Closed'].includes(currentStatus);
+        const isUntouchedCurrent = history.length === 0;
+        
+        let remainingBucket = null;
+        if (isUntouchedCurrent) {
+            remainingBucket = 'remUntouched';
+        } else if (!isClosedCurrent) {
+            if (normalizedResched > targetDate) remainingBucket = 'remFuture';
+            else remainingBucket = 'remPending';
+        }
+
+        return { sourceBucket, actionBucket, actionStatus, remainingBucket, currentStatus, isUntouchedCurrent };
+    };
+
 
     // --- Details Logic ---
     const reportLeads = leads.filter(l => {
@@ -891,253 +954,232 @@
       exportToCSV(headers, rows, "detailed_report.csv");
     };
 
-    // --- Summary Logic ---
+    // --- Daily Summary Logic ---
     const targetUsers = user.role === 'Admin' ? users.filter(u => u.role === 'User') : [user];
     
-    const summaryData = targetUsers.map(userObj => {
-        let opening = 0, newAssigned = 0, rescheduled = 0;
-        let followupDoneFresh = 0, followupDoneResched = 0;
-        let remUntouched = 0, remPending = 0, remFuture = 0;
+    const userSummary = {};
+    targetUsers.forEach(u => {
+        userSummary[u.email] = { id: u.email, name: u.name, opening: 0, newAssigned: 0, rescheduled: 0, followupDoneFresh: 0, followupDoneResched: 0, remUntouched: 0, remPending: 0, remFuture: 0, remTotal: 0 };
+    });
+    
+    const statusSummary = {};
+    ALL_STATUSES.forEach(s => {
+        statusSummary[s] = { id: s, name: s, opening: 0, newAssigned: 0, rescheduled: 0, followupDoneFresh: 0, followupDoneResched: 0, remUntouched: 0, remPending: 0, remFuture: 0, remTotal: 0 };
+    });
+    
+    const grandTotals = { opening: 0, newAssigned: 0, rescheduled: 0, followupDoneFresh: 0, followupDoneResched: 0, remUntouched: 0, remPending: 0, remFuture: 0, remTotal: 0 };
 
-        leads.filter(l => l.assignTo === userObj.email).forEach(l => {
-            const normalizedAssign = normalizeDate(l.assignDate);
-            const normalizedResched = normalizeDate(l.reScheduledDate);
-            const history = parseRemarks(l.remarks);
+    leads.forEach(l => {
+        if (!userSummary[l.assignTo]) return;
+
+        const analysis = analyzeLead(l, summaryDate);
+        const history = parseRemarks(l.remarks);
+        const historyBeforeToday = history.filter(h => h.date < summaryDate);
+        const lastPastStatus = historyBeforeToday.length > 0 ? historyBeforeToday[historyBeforeToday.length - 1].status : 'No Status';
+        
+        const addMetric = (metric, stat) => {
+            userSummary[l.assignTo][metric]++;
+            userSummary[l.assignTo].remTotal = userSummary[l.assignTo].remUntouched + userSummary[l.assignTo].remPending + userSummary[l.assignTo].remFuture;
             
-            const isUntouched = history.length === 0;
-            const isClosed = l.followUpStatus === 'Not Interested' || l.followUpStatus === 'Phone No. Wrong / Incoming off' || l.followUpStatus === 'Closed';
-
-            // 1. Opening
-            if (isUntouched && normalizedAssign && normalizedAssign < summaryDate) {
-                opening++;
-            } else if (!isUntouched && !isClosed && (!normalizedResched || normalizedResched < summaryDate)) {
-                opening++;
+            if (statusSummary[stat]) {
+                statusSummary[stat][metric]++;
+                statusSummary[stat].remTotal = statusSummary[stat].remUntouched + statusSummary[stat].remPending + statusSummary[stat].remFuture;
             }
-
-            // 2. New Assigned
-            if (normalizedAssign === summaryDate) {
-                newAssigned++;
-            }
-
-            // 3. Rescheduled
-            if (normalizedResched === summaryDate) {
-                rescheduled++;
-            }
-
-            // 4. Followups Done
-            const followupsOnDate = history.filter(h => h.date === summaryDate);
-            if (followupsOnDate.length > 0) {
-                if (history[0].date === summaryDate) {
-                    followupDoneFresh++;
-                } else {
-                    followupDoneResched++;
-                }
-            }
-
-            // 5. Remaining
-            if (isUntouched) {
-                remUntouched++;
-            } else if (!isClosed) {
-                if (normalizedResched > summaryDate) {
-                    remFuture++;
-                } else {
-                    remPending++;
-                }
-            }
-        });
-
-        return {
-            name: userObj.name, email: userObj.email,
-            opening, newAssigned, rescheduled, 
-            followupDoneFresh, followupDoneResched,
-            remUntouched, remPending, remFuture,
-            remTotal: remUntouched + remPending + remFuture
+            
+            grandTotals[metric]++;
+            grandTotals.remTotal = grandTotals.remUntouched + grandTotals.remPending + grandTotals.remFuture;
         };
+
+        if (analysis.sourceBucket === 'opening') addMetric('opening', analysis.actionStatus ? 'No Status' : lastPastStatus);
+        if (analysis.sourceBucket === 'newAssigned') addMetric('newAssigned', analysis.isUntouchedCurrent ? 'No Status' : lastPastStatus);
+        if (analysis.sourceBucket === 'rescheduled') addMetric('rescheduled', lastPastStatus);
+
+        if (analysis.actionBucket === 'fresh') addMetric('followupDoneFresh', analysis.actionStatus);
+        if (analysis.actionBucket === 'resched') addMetric('followupDoneResched', analysis.actionStatus);
+
+        if (analysis.remainingBucket === 'remUntouched') addMetric('remUntouched', 'No Status');
+        if (analysis.remainingBucket === 'remPending') addMetric('remPending', analysis.currentStatus);
+        if (analysis.remainingBucket === 'remFuture') addMetric('remFuture', analysis.currentStatus);
     });
 
-    const summaryTotals = summaryData.reduce((acc, curr) => ({
-        opening: acc.opening + curr.opening,
-        newAssigned: acc.newAssigned + curr.newAssigned,
-        rescheduled: acc.rescheduled + curr.rescheduled,
-        followupDoneFresh: acc.followupDoneFresh + curr.followupDoneFresh,
-        followupDoneResched: acc.followupDoneResched + curr.followupDoneResched,
-        remUntouched: acc.remUntouched + curr.remUntouched,
-        remPending: acc.remPending + curr.remPending,
-        remFuture: acc.remFuture + curr.remFuture,
-        remTotal: acc.remTotal + curr.remTotal
-    }), { opening: 0, newAssigned: 0, rescheduled: 0, followupDoneFresh: 0, followupDoneResched: 0, remUntouched: 0, remPending: 0, remFuture: 0, remTotal: 0 });
+    const summaryRenderData = groupBy === 'user' ? Object.values(userSummary) : Object.values(statusSummary).filter(s => s.opening > 0 || s.newAssigned > 0 || s.rescheduled > 0 || s.followupDoneFresh > 0 || s.followupDoneResched > 0 || s.remTotal > 0);
 
     const handleExportSummary = () => {
-      const headers = ["User Name", "Opening", "New Assigned", "Rescheduled", "Followup Done (Fresh)", "Followup Done (Resched)", "Rem (Untouched)", "Rem (Pending)", "Rem (Future)", "Total Remaining"];
-      const rows = summaryData.map(s => [s.name, s.opening, s.newAssigned, s.rescheduled, s.followupDoneFresh, s.followupDoneResched, s.remUntouched, s.remPending, s.remFuture, s.remTotal]);
-      rows.push(["Grand Total", summaryTotals.opening, summaryTotals.newAssigned, summaryTotals.rescheduled, summaryTotals.followupDoneFresh, summaryTotals.followupDoneResched, summaryTotals.remUntouched, summaryTotals.remPending, summaryTotals.remFuture, summaryTotals.remTotal]);
+      const headers = [groupBy === 'status' ? "Status" : "User Name", "Opening", "New Assigned", "Rescheduled", "Followup Done (Fresh)", "Followup Done (Resched)", "Rem (Untouched)", "Rem (Pending)", "Rem (Future)", "Total Remaining"];
+      const rows = summaryRenderData.map(s => [s.name, s.opening, s.newAssigned, s.rescheduled, s.followupDoneFresh, s.followupDoneResched, s.remUntouched, s.remPending, s.remFuture, s.remTotal]);
+      rows.push(["Grand Total", grandTotals.opening, grandTotals.newAssigned, grandTotals.rescheduled, grandTotals.followupDoneFresh, grandTotals.followupDoneResched, grandTotals.remUntouched, grandTotals.remPending, grandTotals.remFuture, grandTotals.remTotal]);
       exportToCSV(headers, rows, `assign_report_summary_${summaryDate}.csv`);
     };
 
     // --- Total All-Time Summary Logic ---
-    const totalData = targetUsers.map(userObj => {
-        let assigned = 0;
-        let followupDoneFresh = 0, followupDoneResched = 0;
-        let remUntouched = 0, remPending = 0, remFuture = 0;
+    const totalUserSummary = {};
+    targetUsers.forEach(u => {
+        totalUserSummary[u.email] = { id: u.email, name: u.name, assigned: 0, followupDoneFresh: 0, followupDoneResched: 0, remUntouched: 0, remPending: 0, remFuture: 0, remTotal: 0 };
+    });
+    const totalStatusSummary = {};
+    ALL_STATUSES.forEach(s => {
+        totalStatusSummary[s] = { id: s, name: s, assigned: 0, followupDoneFresh: 0, followupDoneResched: 0, remUntouched: 0, remPending: 0, remFuture: 0, remTotal: 0 };
+    });
+    const totalGrandTotals = { assigned: 0, followupDoneFresh: 0, followupDoneResched: 0, remUntouched: 0, remPending: 0, remFuture: 0, remTotal: 0 };
+
+    const todayDate = getLocalYYYYMMDD();
+
+    leads.forEach(l => {
+        if (!totalUserSummary[l.assignTo]) return;
         
-        const today = getLocalYYYYMMDD();
+        const history = parseRemarks(l.remarks);
+        const analysis = analyzeLead(l, todayDate);
 
-        leads.filter(l => l.assignTo === userObj.email).forEach(l => {
-            assigned++;
-            const history = parseRemarks(l.remarks);
-            const isUntouched = history.length === 0;
-            const isClosed = l.followUpStatus === 'Not Interested' || l.followUpStatus === 'Phone No. Wrong / Incoming off' || l.followUpStatus === 'Closed';
-            const normalizedResched = normalizeDate(l.reScheduledDate);
-
-            if (history.length === 1) followupDoneFresh++;
-            if (history.length > 1) followupDoneResched++;
-
-            if (isUntouched) {
-                remUntouched++;
-            } else if (!isClosed) {
-                if (normalizedResched > today) remFuture++;
-                else remPending++;
+        const addMetric = (metric, stat) => {
+            totalUserSummary[l.assignTo][metric]++;
+            totalUserSummary[l.assignTo].remTotal = totalUserSummary[l.assignTo].remUntouched + totalUserSummary[l.assignTo].remPending + totalUserSummary[l.assignTo].remFuture;
+            
+            if (totalStatusSummary[stat]) {
+                totalStatusSummary[stat][metric]++;
+                totalStatusSummary[stat].remTotal = totalStatusSummary[stat].remUntouched + totalStatusSummary[stat].remPending + totalStatusSummary[stat].remFuture;
             }
-        });
-
-        return {
-            name: userObj.name, email: userObj.email,
-            assigned, followupDoneFresh, followupDoneResched,
-            remUntouched, remPending, remFuture,
-            remTotal: remUntouched + remPending + remFuture
+            
+            totalGrandTotals[metric]++;
+            totalGrandTotals.remTotal = totalGrandTotals.remUntouched + totalGrandTotals.remPending + totalGrandTotals.remFuture;
         };
+
+        addMetric('assigned', analysis.isUntouchedCurrent ? 'No Status' : analysis.currentStatus);
+
+        if (history.length === 1) addMetric('followupDoneFresh', analysis.currentStatus);
+        else if (history.length > 1) addMetric('followupDoneResched', analysis.currentStatus);
+
+        if (analysis.remainingBucket === 'remUntouched') addMetric('remUntouched', 'No Status');
+        if (analysis.remainingBucket === 'remPending') addMetric('remPending', analysis.currentStatus);
+        if (analysis.remainingBucket === 'remFuture') addMetric('remFuture', analysis.currentStatus);
     });
 
-    const totalAllTimeTotals = totalData.reduce((acc, curr) => ({
-        assigned: acc.assigned + curr.assigned,
-        followupDoneFresh: acc.followupDoneFresh + curr.followupDoneFresh,
-        followupDoneResched: acc.followupDoneResched + curr.followupDoneResched,
-        remUntouched: acc.remUntouched + curr.remUntouched,
-        remPending: acc.remPending + curr.remPending,
-        remFuture: acc.remFuture + curr.remFuture,
-        remTotal: acc.remTotal + curr.remTotal
-    }), { assigned: 0, followupDoneFresh: 0, followupDoneResched: 0, remUntouched: 0, remPending: 0, remFuture: 0, remTotal: 0 });
+    const totalRenderData = groupBy === 'user' ? Object.values(totalUserSummary) : Object.values(totalStatusSummary).filter(s => s.assigned > 0 || s.followupDoneFresh > 0 || s.followupDoneResched > 0 || s.remTotal > 0);
 
     const handleExportTotalSummary = () => {
-      const headers = ["User Name", "Total Assigned", "Total Followup Done (Fresh)", "Total Followup Done (Resched)", "Rem (Untouched)", "Rem (Pending)", "Rem (Future)", "Total Remaining"];
-      const rows = totalData.map(s => [s.name, s.assigned, s.followupDoneFresh, s.followupDoneResched, s.remUntouched, s.remPending, s.remFuture, s.remTotal]);
-      rows.push(["Grand Total", totalAllTimeTotals.assigned, totalAllTimeTotals.followupDoneFresh, totalAllTimeTotals.followupDoneResched, totalAllTimeTotals.remUntouched, totalAllTimeTotals.remPending, totalAllTimeTotals.remFuture, totalAllTimeTotals.remTotal]);
+      const headers = [groupBy === 'status' ? "Status" : "User Name", "Total Assigned", "Total Followup Done (Fresh)", "Total Followup Done (Resched)", "Rem (Untouched)", "Rem (Pending)", "Rem (Future)", "Total Remaining"];
+      const rows = totalRenderData.map(s => [s.name, s.assigned, s.followupDoneFresh, s.followupDoneResched, s.remUntouched, s.remPending, s.remFuture, s.remTotal]);
+      rows.push(["Grand Total", totalGrandTotals.assigned, totalGrandTotals.followupDoneFresh, totalGrandTotals.followupDoneResched, totalGrandTotals.remUntouched, totalGrandTotals.remPending, totalGrandTotals.remFuture, totalGrandTotals.remTotal]);
       exportToCSV(headers, rows, "total_assign_till_date.csv");
     };
 
-    // --- Modal Logic ---
-    const openBreakdownModal = (userEmail, mode, subType) => {
-      setBreakdownUser(userEmail);
+    // --- Universal Crash-Proof Modal Logic ---
+    const openBreakdownModal = (key, mode, subType) => {
+      setBreakdownKey(key);
       setBreakdownMode(mode);
       setBreakdownSubType(subType);
-      
-      if (subType.startsWith('rem')) {
-          setSelectedDrilldownStatus('All'); 
-          setModalView('drilldown');
-      } else {
-          setModalView('breakdown');
-      }
+      setModalGroupBy(groupBy); 
+      setSelectedDrilldownKey('ALL'); 
+      setModalView('breakdown'); 
       setIsBreakdownModalOpen(true);
     };
 
-    const getBreakdownData = () => {
-      const breakdown = {};
-      STATUS_OPTIONS.forEach(s => breakdown[s] = 0);
-      let total = 0;
-
-      leads.filter(l => l.assignTo === breakdownUser).forEach(l => {
-        const history = parseRemarks(l.remarks);
-        let isIncluded = false;
-        let finalStatus = '';
-
-        if (breakdownMode === 'daily') {
-          const followupsOnDate = history.filter(h => h.date === summaryDate);
-          if (followupsOnDate.length > 0) {
-            const firstCallDate = history[0].date;
-            const isFresh = firstCallDate === summaryDate;
-            
-            if ((breakdownSubType === 'fresh' && isFresh) || (breakdownSubType === 'resched' && !isFresh)) {
-              isIncluded = true;
-              finalStatus = followupsOnDate[followupsOnDate.length - 1].status;
-            }
-          }
-        } else {
-          if (history.length > 0) {
-            const isFresh = history.length === 1;
-            if ((breakdownSubType === 'fresh' && isFresh) || (breakdownSubType === 'resched' && !isFresh)) {
-              isIncluded = true;
-              finalStatus = l.followUpStatus;
-            }
-          }
-        }
-
-        if (isIncluded && finalStatus) {
-           if (breakdown[finalStatus] !== undefined) breakdown[finalStatus]++;
-           total++;
-        }
-      });
-      return { breakdown, total };
-    };
-
-    const getDrilldownLeads = (statusToMatch) => {
-      return leads.filter(l => {
-        if (l.assignTo !== breakdownUser) return false;
-        
-        const history = parseRemarks(l.remarks);
-        const isUntouched = history.length === 0;
-        const isClosed = l.followUpStatus === 'Not Interested' || l.followUpStatus === 'Phone No. Wrong / Incoming off' || l.followUpStatus === 'Closed';
-        const normalizedResched = normalizeDate(l.reScheduledDate);
+    const getCellLeads = () => {
+        const matchingLeads = [];
         const compDate = breakdownMode === 'daily' ? summaryDate : getLocalYYYYMMDD();
 
-        // Remaining logic (Bypasses status check)
-        if (breakdownSubType === 'remUntouched') return isUntouched;
-        if (breakdownSubType === 'remPending') return !isUntouched && !isClosed && (!normalizedResched || normalizedResched <= compDate);
-        if (breakdownSubType === 'remFuture') return !isUntouched && !isClosed && normalizedResched > compDate;
+        leads.forEach(l => {
+            if (!targetUsers.some(u => u.email === l.assignTo)) return;
 
-        // Normal followup status logic
-        let isIncluded = false;
-        let finalStatus = '';
-
-        if (breakdownMode === 'daily') {
-          const followupsOnDate = history.filter(h => h.date === summaryDate);
-          if (followupsOnDate.length > 0) {
-            const firstCallDate = history[0].date;
-            const isFresh = firstCallDate === summaryDate;
+            const analysis = analyzeLead(l, compDate);
+            const history = parseRemarks(l.remarks);
             
-            if ((breakdownSubType === 'fresh' && isFresh) || (breakdownSubType === 'resched' && !isFresh)) {
-              isIncluded = true;
-              finalStatus = followupsOnDate[followupsOnDate.length - 1].status;
-            }
-          }
-        } else {
-          if (history.length > 0) {
-            const isFresh = history.length === 1;
-            if ((breakdownSubType === 'fresh' && isFresh) || (breakdownSubType === 'resched' && !isFresh)) {
-              isIncluded = true;
-              finalStatus = l.followUpStatus;
-            }
-          }
-        }
+            let match = false;
+            let effectiveStatus = 'No Status';
 
-        return isIncluded && finalStatus === statusToMatch;
-      });
+            if (breakdownMode === 'daily') {
+                const historyBeforeToday = history.filter(h => h.date < summaryDate);
+                const lastPastStatus = historyBeforeToday.length > 0 ? historyBeforeToday[historyBeforeToday.length - 1].status : 'No Status';
+
+                if (breakdownSubType === 'opening') {
+                    if (analysis.sourceBucket === 'opening') { match = true; effectiveStatus = analysis.actionStatus ? 'No Status' : lastPastStatus; }
+                } else if (breakdownSubType === 'newAssigned') {
+                    if (analysis.sourceBucket === 'newAssigned') { match = true; effectiveStatus = analysis.isUntouchedCurrent ? 'No Status' : lastPastStatus; }
+                } else if (breakdownSubType === 'rescheduled') {
+                    if (analysis.sourceBucket === 'rescheduled') { match = true; effectiveStatus = lastPastStatus; }
+                } else if (breakdownSubType === 'fresh') {
+                    if (analysis.actionBucket === 'fresh') { match = true; effectiveStatus = analysis.actionStatus; }
+                } else if (breakdownSubType === 'resched') {
+                    if (analysis.actionBucket === 'resched') { match = true; effectiveStatus = analysis.actionStatus; }
+                } else if (breakdownSubType === 'remUntouched') {
+                    if (analysis.remainingBucket === 'remUntouched') { match = true; effectiveStatus = 'No Status'; }
+                } else if (breakdownSubType === 'remPending') {
+                    if (analysis.remainingBucket === 'remPending') { match = true; effectiveStatus = analysis.currentStatus; }
+                } else if (breakdownSubType === 'remFuture') {
+                    if (analysis.remainingBucket === 'remFuture') { match = true; effectiveStatus = analysis.currentStatus; }
+                }
+            } else { // allTime
+                if (breakdownSubType === 'assigned') { match = true; effectiveStatus = analysis.isUntouchedCurrent ? 'No Status' : analysis.currentStatus; }
+                else if (breakdownSubType === 'fresh') { if (history.length === 1) { match = true; effectiveStatus = analysis.currentStatus; } }
+                else if (breakdownSubType === 'resched') { if (history.length > 1) { match = true; effectiveStatus = analysis.currentStatus; } }
+                else if (breakdownSubType === 'remUntouched') { if (analysis.remainingBucket === 'remUntouched') { match = true; effectiveStatus = 'No Status'; } }
+                else if (breakdownSubType === 'remPending') { if (analysis.remainingBucket === 'remPending') { match = true; effectiveStatus = analysis.currentStatus; } }
+                else if (breakdownSubType === 'remFuture') { if (analysis.remainingBucket === 'remFuture') { match = true; effectiveStatus = analysis.currentStatus; } }
+            }
+
+            if (!match) return;
+
+            if (breakdownKey !== 'ALL') {
+                if (modalGroupBy === 'user' && l.assignTo !== breakdownKey) return;
+                if (modalGroupBy === 'status' && effectiveStatus !== breakdownKey) return;
+            }
+
+            matchingLeads.push({ ...l, _effectiveStatus: effectiveStatus || 'No Status' });
+        });
+
+        return matchingLeads;
     };
 
-    const handleExportDrilldown = () => {
-      const headers = ["Name", "Mobile No.", "Resched. Date", "Latest Remark"];
-      const leadsToExport = getDrilldownLeads(selectedDrilldownStatus);
+    const cellLeads = getCellLeads();
+    const pivotAxis = modalGroupBy === 'user' ? 'status' : 'user';
+    const pivotKeys = pivotAxis === 'status' ? [...ALL_STATUSES] : targetUsers.map(u => u.email);
+    const breakdownCounts = {};
+    pivotKeys.forEach(k => breakdownCounts[k] = 0);
+    
+    let modalTotalCount = 0;
+    cellLeads.forEach(l => {
+        let key = pivotAxis === 'status' ? (l._effectiveStatus || 'No Status') : l.assignTo;
+        if (breakdownCounts[key] === undefined) {
+            breakdownCounts[key] = 0;
+            pivotKeys.push(key);
+        }
+        breakdownCounts[key]++;
+        modalTotalCount++;
+    });
+
+    const getUserName = (email) => {
+        const u = targetUsers.find(u => u.email === email);
+        return u ? u.name : email;
+    };
+
+    const finalLeads = selectedDrilldownKey === 'ALL' 
+       ? cellLeads 
+       : cellLeads.filter(l => pivotAxis === 'status' ? l._effectiveStatus === selectedDrilldownKey : l.assignTo === selectedDrilldownKey);
+
+    const handleExportModalLeads = () => {
+      const headers = ["Name", "Mobile No.", "Model", "Current Status", "Last Resched. Date", "Next Resched. Date", "Latest Remark"];
+      const leadsToExport = modalView === 'breakdown' ? cellLeads : finalLeads;
       const rows = leadsToExport.map(l => {
          const history = parseRemarks(l.remarks);
          const latestRemark = history.length > 0 ? history[history.length - 1].text : '';
-         return [l.customerName, l.mobileNumber, normalizeDate(l.reScheduledDate), latestRemark];
+         let lastResched = '-';
+         if (history.length > 1 && history[history.length - 2].nextDate) lastResched = normalizeDate(history[history.length - 2].nextDate);
+         else if (history.length > 0 && !history[history.length - 1].nextDate) lastResched = 'Old (Unrecorded)';
+         
+         return [l.customerName, l.mobileNumber, l.modelName, l.followUpStatus || 'Pending', lastResched, normalizeDate(l.reScheduledDate) || '-', latestRemark];
       });
-      exportToCSV(headers, rows, `drilldown_${selectedDrilldownStatus}.csv`);
+      exportToCSV(headers, rows, `leads_export.csv`);
     };
 
-    let drilldownHeaderText = `Leads marked as "${selectedDrilldownStatus}"`;
-    if (breakdownSubType === 'remUntouched') drilldownHeaderText = 'Remaining Leads: Untouched (Never Called)';
-    if (breakdownSubType === 'remPending') drilldownHeaderText = 'Remaining Leads: Pending/Overdue Action';
-    if (breakdownSubType === 'remFuture') drilldownHeaderText = 'Remaining Leads: Rescheduled for Future';
+    const subTypeLabels = {
+        'opening': 'Opening Leads', 'newAssigned': 'New Assigned Leads', 'rescheduled': 'Rescheduled Leads',
+        'fresh': 'Fresh Followups', 'resched': 'Rescheduled Followups', 'assigned': 'Total Assigned Leads',
+        'remUntouched': 'Remaining (Untouched)', 'remPending': 'Remaining (Pending/Overdue)', 'remFuture': 'Remaining (Future)'
+    };
+    
+    const baseLabel = subTypeLabels[breakdownSubType] || 'Leads';
+    const drilldownHeaderText = selectedDrilldownKey === 'ALL' 
+        ? `${baseLabel} (All)` 
+        : `${baseLabel} ➔ ${pivotAxis === 'status' ? selectedDrilldownKey : getUserName(selectedDrilldownKey)}`;
 
     return (
       <div className="space-y-6">
@@ -1272,15 +1314,21 @@
         {reportTab === 'summary' && (
           <div className="space-y-6">
             <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex flex-col md:flex-row items-center justify-between gap-4">
-               <div className="flex items-center gap-4">
-                 <h2 className="text-lg font-semibold text-gray-700">Follow-UP Report Count as on Selected Date:</h2>
+               <div className="flex flex-col md:flex-row items-center gap-4 w-full md:w-auto">
+                 <h2 className="text-lg font-semibold text-gray-700 whitespace-nowrap">Follow-UP Report:</h2>
                  <input 
                    type="date" 
                    value={summaryDate} 
                    onChange={(e) => setSummaryDate(e.target.value)} 
-                   className="border border-gray-300 rounded p-2 text-sm shadow-sm focus:ring-2 focus:ring-blue-500 outline-none" 
+                   className="border border-gray-300 rounded p-2 text-sm shadow-sm focus:ring-2 focus:ring-blue-500 outline-none w-full md:w-auto" 
                  />
+                 
+                 <div className="flex bg-gray-100 p-1 rounded-lg ml-0 md:ml-4">
+                   <button onClick={() => setGroupBy('user')} className={`px-4 py-1.5 text-sm font-medium rounded-md transition-colors ${groupBy === 'user' ? 'bg-white shadow-sm text-blue-700' : 'text-gray-600 hover:bg-gray-200'}`}>User-wise</button>
+                   <button onClick={() => setGroupBy('status')} className={`px-4 py-1.5 text-sm font-medium rounded-md transition-colors ${groupBy === 'status' ? 'bg-white shadow-sm text-blue-700' : 'text-gray-600 hover:bg-gray-200'}`}>Status-wise</button>
+                 </div>
                </div>
+               
                <button onClick={handleExportSummary} className="bg-green-600 hover:bg-green-700 text-white py-2 px-4 rounded text-sm font-medium transition-colors flex items-center gap-2">
                  <i className="fa-solid fa-file-csv"></i> Export CSV
                </button>
@@ -1290,7 +1338,7 @@
               <table className="w-full text-left text-sm whitespace-nowrap">
                 <thead>
                   <tr>
-                    <th className="p-3 border border-gray-300 bg-gray-50 text-gray-700">User Name</th>
+                    <th className="p-3 border border-gray-300 bg-gray-50 text-gray-700">{groupBy === 'status' ? 'Follow-up Status' : 'User Name'}</th>
                     <th className="p-3 border border-gray-300 bg-gray-50 text-gray-700 text-center">Opening</th>
                     <th className="p-3 border border-gray-300 bg-gray-50 text-gray-700 text-center">New Assigned</th>
                     <th className="p-3 border border-gray-300 bg-gray-50 text-gray-700 text-center">Rescheduled</th>
@@ -1303,44 +1351,46 @@
                   </tr>
                 </thead>
                 <tbody>
-                  {summaryData.map(s => (
-                    <tr key={s.name} className="hover:bg-gray-50">
+                  {summaryRenderData.map(s => (
+                    <tr key={s.id} className="hover:bg-gray-50">
                       <td className="p-3 border border-gray-300 font-medium text-gray-800">{s.name}</td>
-                      <td className="p-3 border border-gray-300 text-center">{s.opening}</td>
-                      <td className="p-3 border border-gray-300 text-center">{s.assigned}</td>
-                      <td className="p-3 border border-gray-300 text-center">{s.rescheduled}</td>
+                      <td className="p-3 border border-gray-300 text-center">
+                        {s.opening > 0 ? <button onClick={() => openBreakdownModal(s.id, 'daily', 'opening')} className="text-blue-600 font-bold hover:underline">{s.opening}</button> : <span className="text-gray-400">0</span>}
+                      </td>
+                      <td className="p-3 border border-gray-300 text-center">
+                        {s.newAssigned > 0 ? <button onClick={() => openBreakdownModal(s.id, 'daily', 'newAssigned')} className="text-blue-600 font-bold hover:underline">{s.newAssigned}</button> : <span className="text-gray-400">0</span>}
+                      </td>
+                      <td className="p-3 border border-gray-300 text-center">
+                        {s.rescheduled > 0 ? <button onClick={() => openBreakdownModal(s.id, 'daily', 'rescheduled')} className="text-blue-600 font-bold hover:underline">{s.rescheduled}</button> : <span className="text-gray-400">0</span>}
+                      </td>
                       
                       <td className="p-3 border border-gray-300 text-center bg-cyan-50">
                         {s.followupDoneFresh > 0 ? (
-                          <button onClick={() => openBreakdownModal(s.email, 'daily', 'fresh')} className="text-cyan-700 underline font-bold hover:text-cyan-900 px-2 py-1 rounded" title="View Fresh Followups">
-                            {s.followupDoneFresh}
-                          </button>
+                          <button onClick={() => openBreakdownModal(s.id, 'daily', 'fresh')} className="text-cyan-700 font-bold hover:underline">{s.followupDoneFresh}</button>
                         ) : <span className="text-gray-400">0</span>}
                       </td>
 
                       <td className="p-3 border border-gray-300 text-center bg-purple-50">
                         {s.followupDoneResched > 0 ? (
-                          <button onClick={() => openBreakdownModal(s.email, 'daily', 'resched')} className="text-purple-700 underline font-bold hover:text-purple-900 px-2 py-1 rounded" title="View Rescheduled Followups">
-                            {s.followupDoneResched}
-                          </button>
+                          <button onClick={() => openBreakdownModal(s.id, 'daily', 'resched')} className="text-purple-700 font-bold hover:underline">{s.followupDoneResched}</button>
                         ) : <span className="text-gray-400">0</span>}
                       </td>
 
                       <td className="p-3 border border-gray-300 text-center bg-yellow-50">
                         {s.remUntouched > 0 ? (
-                          <button onClick={() => openBreakdownModal(s.email, 'daily', 'remUntouched')} className="text-yellow-800 underline font-bold hover:text-yellow-900 px-2 py-1 rounded">{s.remUntouched}</button>
+                          <button onClick={() => openBreakdownModal(s.id, 'daily', 'remUntouched')} className="text-yellow-800 font-bold hover:underline">{s.remUntouched}</button>
                         ) : <span className="text-gray-400">0</span>}
                       </td>
                       
                       <td className="p-3 border border-gray-300 text-center bg-orange-50">
                         {s.remPending > 0 ? (
-                          <button onClick={() => openBreakdownModal(s.email, 'daily', 'remPending')} className="text-orange-800 underline font-bold hover:text-orange-900 px-2 py-1 rounded">{s.remPending}</button>
+                          <button onClick={() => openBreakdownModal(s.id, 'daily', 'remPending')} className="text-orange-800 font-bold hover:underline">{s.remPending}</button>
                         ) : <span className="text-gray-400">0</span>}
                       </td>
                       
                       <td className="p-3 border border-gray-300 text-center bg-yellow-100">
                         {s.remFuture > 0 ? (
-                          <button onClick={() => openBreakdownModal(s.email, 'daily', 'remFuture')} className="text-yellow-900 underline font-bold hover:text-black px-2 py-1 rounded">{s.remFuture}</button>
+                          <button onClick={() => openBreakdownModal(s.id, 'daily', 'remFuture')} className="text-yellow-900 font-bold hover:underline">{s.remFuture}</button>
                         ) : <span className="text-gray-400">0</span>}
                       </td>
 
@@ -1348,17 +1398,34 @@
                     </tr>
                   ))}
                   
+                  {/* Grand Total Row */}
                   <tr className="bg-gray-100">
-                    <td className="p-3 border border-gray-400 font-bold text-gray-900">Grand Total</td>
-                    <td className="p-3 border border-gray-400 font-bold text-center text-gray-900">{summaryTotals.opening}</td>
-                    <td className="p-3 border border-gray-400 font-bold text-center text-gray-900">{summaryTotals.newAssigned}</td>
-                    <td className="p-3 border border-gray-400 font-bold text-center text-gray-900">{summaryTotals.rescheduled}</td>
-                    <td className="p-3 border border-gray-400 font-bold text-center text-cyan-800 bg-cyan-100">{summaryTotals.followupDoneFresh}</td>
-                    <td className="p-3 border border-gray-400 font-bold text-center text-purple-800 bg-purple-100">{summaryTotals.followupDoneResched}</td>
-                    <td className="p-3 border border-gray-400 font-bold text-center text-yellow-800 bg-yellow-200">{summaryTotals.remUntouched}</td>
-                    <td className="p-3 border border-gray-400 font-bold text-center text-orange-800 bg-orange-200">{summaryTotals.remPending}</td>
-                    <td className="p-3 border border-gray-400 font-bold text-center text-yellow-900 bg-yellow-300">{summaryTotals.remFuture}</td>
-                    <td className="p-3 border border-gray-400 font-bold text-center bg-red-200 text-red-900">{summaryTotals.remTotal}</td>
+                    <td className="p-3 border border-gray-400 font-bold text-gray-900 cursor-help" title="Click numbers to drilldown overall totals">Grand Total</td>
+                    <td className="p-3 border border-gray-400 font-bold text-center text-blue-700">
+                        {grandTotals.opening > 0 ? <button onClick={() => openBreakdownModal('ALL', 'daily', 'opening')} className="hover:underline">{grandTotals.opening}</button> : 0}
+                    </td>
+                    <td className="p-3 border border-gray-400 font-bold text-center text-blue-700">
+                        {grandTotals.newAssigned > 0 ? <button onClick={() => openBreakdownModal('ALL', 'daily', 'newAssigned')} className="hover:underline">{grandTotals.newAssigned}</button> : 0}
+                    </td>
+                    <td className="p-3 border border-gray-400 font-bold text-center text-blue-700">
+                        {grandTotals.rescheduled > 0 ? <button onClick={() => openBreakdownModal('ALL', 'daily', 'rescheduled')} className="hover:underline">{grandTotals.rescheduled}</button> : 0}
+                    </td>
+                    <td className="p-3 border border-gray-400 font-bold text-center text-cyan-800 bg-cyan-100">
+                        {grandTotals.followupDoneFresh > 0 ? <button onClick={() => openBreakdownModal('ALL', 'daily', 'fresh')} className="hover:underline">{grandTotals.followupDoneFresh}</button> : 0}
+                    </td>
+                    <td className="p-3 border border-gray-400 font-bold text-center text-purple-800 bg-purple-100">
+                        {grandTotals.followupDoneResched > 0 ? <button onClick={() => openBreakdownModal('ALL', 'daily', 'resched')} className="hover:underline">{grandTotals.followupDoneResched}</button> : 0}
+                    </td>
+                    <td className="p-3 border border-gray-400 font-bold text-center text-yellow-800 bg-yellow-200">
+                        {grandTotals.remUntouched > 0 ? <button onClick={() => openBreakdownModal('ALL', 'daily', 'remUntouched')} className="hover:underline">{grandTotals.remUntouched}</button> : 0}
+                    </td>
+                    <td className="p-3 border border-gray-400 font-bold text-center text-orange-800 bg-orange-200">
+                        {grandTotals.remPending > 0 ? <button onClick={() => openBreakdownModal('ALL', 'daily', 'remPending')} className="hover:underline">{grandTotals.remPending}</button> : 0}
+                    </td>
+                    <td className="p-3 border border-gray-400 font-bold text-center text-yellow-900 bg-yellow-300">
+                        {grandTotals.remFuture > 0 ? <button onClick={() => openBreakdownModal('ALL', 'daily', 'remFuture')} className="hover:underline">{grandTotals.remFuture}</button> : 0}
+                    </td>
+                    <td className="p-3 border border-gray-400 font-bold text-center bg-red-200 text-red-900">{grandTotals.remTotal}</td>
                   </tr>
                 </tbody>
               </table>
@@ -1369,7 +1436,13 @@
         {reportTab === 'totalSummary' && (
           <div className="space-y-6">
             <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 flex flex-col md:flex-row items-center justify-between gap-4">
-               <h2 className="text-lg font-semibold text-gray-700">Total All-Time Assignment & Follow-Up Report:</h2>
+               <div className="flex flex-col md:flex-row items-center gap-4 w-full md:w-auto">
+                 <h2 className="text-lg font-semibold text-gray-700">Total All-Time Assignment & Follow-Up Report:</h2>
+                 <div className="flex bg-gray-100 p-1 rounded-lg ml-0 md:ml-4">
+                   <button onClick={() => setGroupBy('user')} className={`px-4 py-1.5 text-sm font-medium rounded-md transition-colors ${groupBy === 'user' ? 'bg-white shadow-sm text-blue-700' : 'text-gray-600 hover:bg-gray-200'}`}>User-wise</button>
+                   <button onClick={() => setGroupBy('status')} className={`px-4 py-1.5 text-sm font-medium rounded-md transition-colors ${groupBy === 'status' ? 'bg-white shadow-sm text-blue-700' : 'text-gray-600 hover:bg-gray-200'}`}>Status-wise</button>
+                 </div>
+               </div>
                <button onClick={handleExportTotalSummary} className="bg-green-600 hover:bg-green-700 text-white py-2 px-4 rounded text-sm font-medium transition-colors flex items-center gap-2">
                  <i className="fa-solid fa-file-csv"></i> Export CSV
                </button>
@@ -1379,7 +1452,7 @@
               <table className="w-full text-left text-sm whitespace-nowrap">
                 <thead>
                   <tr>
-                    <th className="p-3 border border-gray-300 bg-gray-50 text-gray-700">User Name</th>
+                    <th className="p-3 border border-gray-300 bg-gray-50 text-gray-700">{groupBy === 'status' ? 'Follow-up Status' : 'User Name'}</th>
                     <th className="p-3 border border-gray-300 bg-gray-50 text-gray-700 text-center">Total Assigned</th>
                     <th className="p-3 border border-gray-300 bg-cyan-50 text-cyan-800 text-center">Total Followup Done (Fresh)</th>
                     <th className="p-3 border border-gray-300 bg-purple-50 text-purple-800 text-center">Total Followup Done (Resched)</th>
@@ -1390,14 +1463,16 @@
                   </tr>
                 </thead>
                 <tbody>
-                  {totalData.map(s => (
-                    <tr key={s.name} className="hover:bg-gray-50">
+                  {totalRenderData.map(s => (
+                    <tr key={s.id} className="hover:bg-gray-50">
                       <td className="p-3 border border-gray-300 font-medium text-gray-800">{s.name}</td>
-                      <td className="p-3 border border-gray-300 text-center">{s.assigned}</td>
+                      <td className="p-3 border border-gray-300 text-center">
+                        {s.assigned > 0 ? <button onClick={() => openBreakdownModal(s.id, 'allTime', 'assigned')} className="text-blue-600 font-bold hover:underline">{s.assigned}</button> : <span className="text-gray-400">0</span>}
+                      </td>
                       
                       <td className="p-3 border border-gray-300 text-center bg-cyan-50">
                         {s.followupDoneFresh > 0 ? (
-                          <button onClick={() => openBreakdownModal(s.email, 'allTime', 'fresh')} className="text-cyan-700 underline font-bold hover:text-cyan-900 px-2 py-1 rounded" title="View Fresh Followups">
+                          <button onClick={() => openBreakdownModal(s.id, 'allTime', 'fresh')} className="text-cyan-700 font-bold hover:underline" title="View Fresh Followups">
                             {s.followupDoneFresh}
                           </button>
                         ) : <span className="text-gray-400">0</span>}
@@ -1405,7 +1480,7 @@
 
                       <td className="p-3 border border-gray-300 text-center bg-purple-50">
                         {s.followupDoneResched > 0 ? (
-                          <button onClick={() => openBreakdownModal(s.email, 'allTime', 'resched')} className="text-purple-700 underline font-bold hover:text-purple-900 px-2 py-1 rounded" title="View Rescheduled Followups">
+                          <button onClick={() => openBreakdownModal(s.id, 'allTime', 'resched')} className="text-purple-700 font-bold hover:underline" title="View Rescheduled Followups">
                             {s.followupDoneResched}
                           </button>
                         ) : <span className="text-gray-400">0</span>}
@@ -1413,19 +1488,19 @@
 
                       <td className="p-3 border border-gray-300 text-center bg-yellow-50">
                         {s.remUntouched > 0 ? (
-                          <button onClick={() => openBreakdownModal(s.email, 'allTime', 'remUntouched')} className="text-yellow-800 underline font-bold hover:text-yellow-900 px-2 py-1 rounded">{s.remUntouched}</button>
+                          <button onClick={() => openBreakdownModal(s.id, 'allTime', 'remUntouched')} className="text-yellow-800 font-bold hover:underline">{s.remUntouched}</button>
                         ) : <span className="text-gray-400">0</span>}
                       </td>
                       
                       <td className="p-3 border border-gray-300 text-center bg-orange-50">
                         {s.remPending > 0 ? (
-                          <button onClick={() => openBreakdownModal(s.email, 'allTime', 'remPending')} className="text-orange-800 underline font-bold hover:text-orange-900 px-2 py-1 rounded">{s.remPending}</button>
+                          <button onClick={() => openBreakdownModal(s.id, 'allTime', 'remPending')} className="text-orange-800 font-bold hover:underline">{s.remPending}</button>
                         ) : <span className="text-gray-400">0</span>}
                       </td>
                       
                       <td className="p-3 border border-gray-300 text-center bg-yellow-100">
                         {s.remFuture > 0 ? (
-                          <button onClick={() => openBreakdownModal(s.email, 'allTime', 'remFuture')} className="text-yellow-900 underline font-bold hover:text-black px-2 py-1 rounded">{s.remFuture}</button>
+                          <button onClick={() => openBreakdownModal(s.id, 'allTime', 'remFuture')} className="text-yellow-900 font-bold hover:underline">{s.remFuture}</button>
                         ) : <span className="text-gray-400">0</span>}
                       </td>
 
@@ -1434,14 +1509,26 @@
                   ))}
                   
                   <tr className="bg-gray-100">
-                    <td className="p-3 border border-gray-400 font-bold text-gray-900">Grand Total</td>
-                    <td className="p-3 border border-gray-400 font-bold text-center text-gray-900">{totalAllTimeTotals.assigned}</td>
-                    <td className="p-3 border border-gray-400 font-bold text-center text-cyan-800 bg-cyan-100">{totalAllTimeTotals.followupDoneFresh}</td>
-                    <td className="p-3 border border-gray-400 font-bold text-center text-purple-800 bg-purple-100">{totalAllTimeTotals.followupDoneResched}</td>
-                    <td className="p-3 border border-gray-400 font-bold text-center text-yellow-800 bg-yellow-200">{totalAllTimeTotals.remUntouched}</td>
-                    <td className="p-3 border border-gray-400 font-bold text-center text-orange-800 bg-orange-200">{totalAllTimeTotals.remPending}</td>
-                    <td className="p-3 border border-gray-400 font-bold text-center text-yellow-900 bg-yellow-300">{totalAllTimeTotals.remFuture}</td>
-                    <td className="p-3 border border-gray-400 font-bold text-center bg-red-200 text-red-900">{totalAllTimeTotals.remTotal}</td>
+                    <td className="p-3 border border-gray-400 font-bold text-gray-900 cursor-help" title="Click numbers to drilldown overall totals">Grand Total</td>
+                    <td className="p-3 border border-gray-400 font-bold text-center text-blue-700">
+                        {totalGrandTotals.assigned > 0 ? <button onClick={() => openBreakdownModal('ALL', 'allTime', 'assigned')} className="hover:underline">{totalGrandTotals.assigned}</button> : 0}
+                    </td>
+                    <td className="p-3 border border-gray-400 font-bold text-center text-cyan-800 bg-cyan-100">
+                        {totalGrandTotals.followupDoneFresh > 0 ? <button onClick={() => openBreakdownModal('ALL', 'allTime', 'fresh')} className="hover:underline">{totalGrandTotals.followupDoneFresh}</button> : 0}
+                    </td>
+                    <td className="p-3 border border-gray-400 font-bold text-center text-purple-800 bg-purple-100">
+                        {totalGrandTotals.followupDoneResched > 0 ? <button onClick={() => openBreakdownModal('ALL', 'allTime', 'resched')} className="hover:underline">{totalGrandTotals.followupDoneResched}</button> : 0}
+                    </td>
+                    <td className="p-3 border border-gray-400 font-bold text-center text-yellow-800 bg-yellow-200">
+                        {totalGrandTotals.remUntouched > 0 ? <button onClick={() => openBreakdownModal('ALL', 'allTime', 'remUntouched')} className="hover:underline">{totalGrandTotals.remUntouched}</button> : 0}
+                    </td>
+                    <td className="p-3 border border-gray-400 font-bold text-center text-orange-800 bg-orange-200">
+                        {totalGrandTotals.remPending > 0 ? <button onClick={() => openBreakdownModal('ALL', 'allTime', 'remPending')} className="hover:underline">{totalGrandTotals.remPending}</button> : 0}
+                    </td>
+                    <td className="p-3 border border-gray-400 font-bold text-center text-yellow-900 bg-yellow-300">
+                        {totalGrandTotals.remFuture > 0 ? <button onClick={() => openBreakdownModal('ALL', 'allTime', 'remFuture')} className="hover:underline">{totalGrandTotals.remFuture}</button> : 0}
+                    </td>
+                    <td className="p-3 border border-gray-400 font-bold text-center bg-red-200 text-red-900">{totalGrandTotals.remTotal}</td>
                   </tr>
                 </tbody>
               </table>
@@ -1455,72 +1542,101 @@
             <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl flex flex-col max-h-[90vh] overflow-hidden">
               <div className="bg-blue-600 text-white p-4 flex justify-between items-center">
                 <h2 className="text-xl font-bold">
-                  Follow-up Details
+                  {modalView === 'breakdown' ? 'Pivot Breakdown' : (modalView === 'drilldown' ? 'Leads Detail' : 'Lead History')}
                   <span className="text-blue-200 text-lg ml-2 font-medium">
                     ({breakdownMode === 'allTime' ? 'All Time' : summaryDate})
                   </span>
                 </h2>
-                <button onClick={() => setIsBreakdownModalOpen(false)} className="text-white hover:text-gray-200 text-xl leading-none">
-                  <i className="fa-solid fa-xmark"></i>
-                </button>
+                <div className="flex items-center gap-3">
+                    <button onClick={() => handleExportModalLeads()} className="bg-green-500 hover:bg-green-400 text-white py-1 px-3 rounded text-sm font-medium transition-colors flex items-center gap-1.5 shadow-sm">
+                        <i className="fa-solid fa-download"></i> Export
+                    </button>
+                    <button onClick={() => setIsBreakdownModalOpen(false)} className="text-white hover:text-gray-200 text-xl leading-none px-2">
+                      <i className="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
               </div>
               
               <div className="p-6 flex-1 overflow-y-auto bg-gray-50">
-                <div className="mb-6">
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">Selected User</label>
-                  <select 
-                    value={breakdownUser} 
-                    onChange={(e) => {
-                      setBreakdownUser(e.target.value);
-                      if (breakdownSubType.startsWith('rem')) setModalView('drilldown');
-                      else setModalView('breakdown');
-                    }}
-                    className="w-full border border-gray-300 rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-                  >
-                    {targetUsers.map(u => (
-                      <option key={u.email} value={u.email}>{u.name}</option>
-                    ))}
-                  </select>
-                </div>
+                {modalView === 'breakdown' && (() => {
+                  if (breakdownKey === 'ALL') {
+                      return (
+                          <div className="bg-white p-4 border border-blue-200 rounded-lg shadow-sm text-center mb-6">
+                              <h3 className="text-lg font-bold text-blue-800">Grand Total View</h3>
+                              <p className="text-gray-600 text-sm mt-1">Showing breakdown across all {modalGroupBy === 'user' ? 'users' : 'statuses'}</p>
+                          </div>
+                      );
+                  }
+                  return (
+                    <div className="mb-6">
+                      <label className="block text-sm font-semibold text-gray-700 mb-2">Selected Pivot Filter</label>
+                      <select 
+                        value={breakdownKey} 
+                        onChange={(e) => setBreakdownKey(e.target.value)}
+                        className="w-full border border-gray-300 rounded-lg p-2.5 outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                      >
+                        {modalGroupBy === 'user' ? targetUsers.map(u => (
+                          <option key={u.email} value={u.email}>{u.name}</option>
+                        )) : ALL_STATUSES.map(s => (
+                          <option key={s} value={s}>{s}</option>
+                        ))}
+                      </select>
+                    </div>
+                  );
+                })()}
                 
                 {modalView === 'breakdown' && (() => {
-                  const { breakdown, total } = getBreakdownData();
                   return (
                     <div className="bg-white border border-gray-200 rounded-lg overflow-hidden shadow-sm">
                       <table className="w-full text-left text-sm whitespace-nowrap">
                         <thead className="bg-gray-100 text-gray-700 border-b">
                           <tr>
-                            <th className="p-3 font-semibold uppercase tracking-wider text-xs">Follow-up Status</th>
+                            <th className="p-3 font-semibold uppercase tracking-wider text-xs">{pivotAxis === 'status' ? 'Follow-up Status' : 'User Name'}</th>
                             <th className="p-3 font-semibold uppercase tracking-wider text-xs text-center">Count</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {STATUS_OPTIONS.map(status => (
-                            <tr key={status} className="border-b hover:bg-gray-50 last:border-0">
-                              <td className="p-3 font-medium text-gray-700">{status}</td>
-                              <td className="p-3 text-center text-gray-900 font-medium">
-                                {breakdown[status] > 0 ? (
-                                  <button 
-                                    onClick={() => {
-                                      setSelectedDrilldownStatus(status);
-                                      setModalView('drilldown');
-                                    }}
-                                    className="text-blue-600 underline font-bold hover:text-blue-800"
-                                    title="View Leads"
-                                  >
-                                    {breakdown[status]}
-                                  </button>
-                                ) : (
-                                  breakdown[status]
-                                )}
-                              </td>
-                            </tr>
-                          ))}
+                          {pivotKeys.map(k => {
+                            const count = breakdownCounts[k];
+                            if (k === 'No Status' && count === 0) return null;
+                            return (
+                                <tr key={k} className="border-b hover:bg-gray-50 last:border-0">
+                                  <td className="p-3 font-medium text-gray-700">{pivotAxis === 'status' ? k : getUserName(k)}</td>
+                                  <td className="p-3 text-center text-gray-900 font-medium">
+                                    {count > 0 ? (
+                                      <button 
+                                        onClick={() => {
+                                          setSelectedDrilldownKey(k);
+                                          setModalView('drilldown');
+                                        }}
+                                        className="text-blue-600 underline font-bold hover:text-blue-800 px-3 py-1 rounded"
+                                        title="View Leads"
+                                      >
+                                        {count}
+                                      </button>
+                                    ) : (
+                                      count
+                                    )}
+                                  </td>
+                                </tr>
+                            );
+                          })}
                           <tr className="bg-blue-50 font-bold border-t-2 border-blue-200">
                             <td className="p-3 text-right text-blue-900">
-                              {breakdownMode === 'daily' ? `Total for ${summaryDate}:` : 'Total (All-time):'}
+                              Total Leads:
                             </td>
-                            <td className="p-3 text-center text-blue-800 text-lg">{total}</td>
+                            <td className="p-3 text-center text-blue-800 text-lg">
+                               <button 
+                                 onClick={() => {
+                                   setSelectedDrilldownKey('ALL');
+                                   setModalView('drilldown');
+                                 }}
+                                 className="hover:underline text-blue-800"
+                                 title="View All Leads"
+                               >
+                                 {modalTotalCount}
+                               </button>
+                            </td>
                           </tr>
                         </tbody>
                       </table>
@@ -1532,18 +1648,15 @@
                   <div>
                     <div className="flex items-center justify-between mb-4 gap-2">
                       <div className="flex items-center gap-2 flex-1 truncate">
-                        {!breakdownSubType.startsWith('rem') && (
+                        {(breakdownSubType === 'fresh' || breakdownSubType === 'resched') && (
                           <button onClick={() => setModalView('breakdown')} className="text-gray-600 hover:text-gray-900 bg-gray-200 hover:bg-gray-300 px-3 py-1.5 rounded text-sm font-medium transition-colors">
                             <i className="fa-solid fa-arrow-left mr-1"></i> Back
                           </button>
                         )}
                         <h3 className="text-md font-bold text-gray-800 truncate">
-                          {drilldownHeaderText}
+                          {drilldownHeaderText} {selectedDrilldownKey !== 'ALL' && `- [${pivotAxis === 'status' ? selectedDrilldownKey : getUserName(selectedDrilldownKey)}]`}
                         </h3>
                       </div>
-                      <button onClick={handleExportDrilldown} className="bg-green-600 hover:bg-green-700 text-white py-1.5 px-3 rounded text-sm font-medium transition-colors flex items-center gap-1.5">
-                        <i className="fa-solid fa-file-csv"></i> Export
-                      </button>
                     </div>
                     
                     <div className="bg-white border border-gray-200 rounded-lg overflow-x-auto shadow-sm w-full">
@@ -1552,19 +1665,25 @@
                           <tr>
                             <th className="p-3 font-semibold uppercase tracking-wider text-xs">Name</th>
                             <th className="p-3 font-semibold uppercase tracking-wider text-xs">Mobile No.</th>
-                            <th className="p-3 font-semibold uppercase tracking-wider text-xs text-blue-700">Resched. Date</th>
+                            <th className="p-3 font-semibold uppercase tracking-wider text-xs text-blue-700">Last Resched.</th>
+                            <th className="p-3 font-semibold uppercase tracking-wider text-xs text-blue-700">Next Resched.</th>
                             <th className="p-3 font-semibold uppercase tracking-wider text-xs">Remarks</th>
                             <th className="p-3 font-semibold uppercase tracking-wider text-xs text-center">Action</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {getDrilldownLeads(selectedDrilldownStatus).map(lead => {
+                          {finalLeads.length === 0 ? <tr><td colSpan="6" className="p-4 text-center text-gray-500">No leads found.</td></tr> : finalLeads.map(lead => {
                             const history = parseRemarks(lead.remarks);
                             const latestRemark = history.length > 0 ? history[history.length - 1].text : '-';
+                            let lastResched = '-';
+                            if (history.length > 1 && history[history.length - 2].nextDate) lastResched = normalizeDate(history[history.length - 2].nextDate);
+                            else if (history.length > 0 && !history[history.length - 1].nextDate) lastResched = 'Old (Unrecorded)';
+                            
                             return (
                               <tr key={lead.sn} className="border-b hover:bg-gray-50 last:border-0">
                                 <td className="p-3 font-medium text-gray-800">{lead.customerName}</td>
                                 <td className="p-3 text-gray-600">{lead.mobileNumber}</td>
+                                <td className="p-3 text-gray-500 text-xs italic">{lastResched}</td>
                                 <td className="p-3 text-blue-600 font-medium">{normalizeDate(lead.reScheduledDate) || '-'}</td>
                                 <td className="p-3 text-gray-600 truncate max-w-[150px]" title={latestRemark}>{latestRemark}</td>
                                 <td className="p-3 text-center">
@@ -1620,15 +1739,14 @@
                           {parseRemarks(selectedLead.remarks).length === 0 ? (
                              <div className="text-gray-500 italic text-sm">No remarks history available yet.</div>
                           ) : parseRemarks(selectedLead.remarks).map((h, idx) => {
-                            const isHighlighted = breakdownMode === 'daily' 
-                                ? (h.status === selectedDrilldownStatus && h.date === summaryDate)
-                                : (h.status === selectedDrilldownStatus);
-                            
                             return (
                               <div key={idx} className="border-l-4 border-blue-400 pl-3 py-2 bg-white rounded shadow-sm">
                                 <div className="flex justify-between items-center mb-1.5">
-                                  <span className="text-gray-500 font-medium text-xs">{h.date}</span>
-                                  <span className={`font-bold text-[10px] px-2 py-0.5 rounded ${isHighlighted ? 'bg-blue-100 text-blue-700' : 'bg-gray-200 text-gray-700'}`}>{h.status}</span>
+                                  <div className="flex flex-col">
+                                    <span className="text-gray-500 font-medium text-xs">{h.date}</span>
+                                    {h.nextDate && <span className="text-[10px] text-orange-500 italic mt-0.5">Rescheduled To: {normalizeDate(h.nextDate)}</span>}
+                                  </div>
+                                  <span className="font-bold text-[10px] px-2 py-0.5 rounded bg-gray-200 text-gray-700">{h.status}</span>
                                 </div>
                                 <div className="text-gray-800 text-sm leading-relaxed">{h.text}</div>
                               </div>
